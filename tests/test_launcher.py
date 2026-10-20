@@ -102,6 +102,46 @@ class LauncherBoundaryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     launcher.validate(dict(self.config, TZ=timezone))
 
+    def test_resource_defaults_and_literal_overrides(self):
+        expected = {
+            "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
+            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "4g",
+            "CLAUDE_TMP_TMPFS_SIZE": "4g",
+        }
+        env_file = self.root / ".env"
+        env_file.write_text("")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = launcher.read_config(env_file)
+        self.assertEqual({key: config[key] for key in expected}, expected)
+        env_file.write_text("CLAUDE_MEMORY_LIMIT=8192M\nCLAUDE_PIDS_LIMIT=768\n")
+        with mock.patch.dict(os.environ, {"CLAUDE_SHM_SIZE": "512m"}, clear=True):
+            config = launcher.read_config(env_file)
+        launcher.validate_resources(config)
+        self.assertEqual(config["CLAUDE_MEMORY_LIMIT"], "8192m")
+        self.assertEqual(config["CLAUDE_PIDS_LIMIT"], "768")
+        self.assertEqual(config["CLAUDE_SHM_SIZE"], "512m")
+
+    def test_invalid_or_unlimited_resource_values_rejected(self):
+        for key in ("CLAUDE_MEMORY_LIMIT", "CLAUDE_SHM_SIZE",
+                    "CLAUDE_HOME_TMPFS_SIZE", "CLAUDE_TMP_TMPFS_SIZE"):
+            for value in ("", "0", "-1", "0g", "1.5g", "8gb", "50%", "8 g",
+                          "8g,exec", "1g\n", "$(id)", "9999999999g"):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ValueError):
+                        launcher.validate(dict(self.config, **{key: value}))
+        for value in ("", "0", "-1", "1.5", "1024,foo", "1024\n", "65537"):
+            with self.subTest(pids=value):
+                with self.assertRaises(ValueError):
+                    launcher.validate(dict(self.config, CLAUDE_PIDS_LIMIT=value))
+
+    def test_tmpfs_and_shm_cannot_individually_exceed_memory_budget(self):
+        for key in ("CLAUDE_SHM_SIZE", "CLAUDE_HOME_TMPFS_SIZE", "CLAUDE_TMP_TMPFS_SIZE"):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "must not exceed"):
+                    launcher.validate(dict(self.config, **{key: "9g"}))
+        # Independent upper bounds are not preallocated or added to the cgroup cap.
+        self.assertEqual(launcher.validate(dict(self.config))["CLAUDE_MEMORY_LIMIT"], "8g")
+
     def test_sensitive_paths_inside_workspace_are_rejected_including_symlinks(self):
         inside = self.workspace / "private.json"
         inside.write_text("{}")

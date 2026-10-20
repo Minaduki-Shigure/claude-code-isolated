@@ -25,10 +25,15 @@ ALLOWED = {
     "MODEL_API_KEY_FILE", "HOST_PROXY_HOST", "HOST_PROXY_PORT",
     "CLAUDE_IMAGE", "GATEWAY_IMAGE", "SETTINGS_FILE", "GATEWAY_POLICY_FILE",
     "STARTUP_CONFIG_FILE", "TZ",
+    "CLAUDE_MEMORY_LIMIT", "CLAUDE_PIDS_LIMIT", "CLAUDE_SHM_SIZE",
+    "CLAUDE_HOME_TMPFS_SIZE", "CLAUDE_TMP_TMPFS_SIZE",
 }
 DEFAULTS = {
     "HOST_PROXY_HOST": "host.docker.internal", "HOST_PROXY_PORT": "6152",
     "TZ": "America/Los_Angeles",
+    "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
+    "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "4g",
+    "CLAUDE_TMP_TMPFS_SIZE": "4g",
     "MODEL_AUTH_MODE": "bearer", "ANTHROPIC_MODEL": "",
     "CLAUDE_IMAGE": "ghcr.io/minaduki-shigure/claude-code-isolated:latest",
     "GATEWAY_IMAGE": "ghcr.io/minaduki-shigure/claude-code-isolated-gateway:latest",
@@ -69,10 +74,32 @@ def inside(path, root):
     return path == root or root in path.parents
 
 
+def validate_resources(config):
+    sizes = {}
+    for key in ("CLAUDE_MEMORY_LIMIT", "CLAUDE_SHM_SIZE",
+                "CLAUDE_HOME_TMPFS_SIZE", "CLAUDE_TMP_TMPFS_SIZE"):
+        value = config[key].lower()
+        match = re.fullmatch(r"([1-9][0-9]{0,9})([mg])", value)
+        if not match:
+            raise ValueError(f"{key} must be a positive whole number followed by m or g")
+        size = int(match[1]) * (1024 ** (2 if match[2] == "m" else 3))
+        if size >= 2 ** 63:
+            raise ValueError(f"{key} is too large")
+        config[key] = value
+        sizes[key] = size
+    for key in ("CLAUDE_SHM_SIZE", "CLAUDE_HOME_TMPFS_SIZE", "CLAUDE_TMP_TMPFS_SIZE"):
+        if sizes[key] > sizes["CLAUDE_MEMORY_LIMIT"]:
+            raise ValueError(f"{key} must not exceed CLAUDE_MEMORY_LIMIT")
+    pids = config["CLAUDE_PIDS_LIMIT"]
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", pids) or int(pids) > 65536:
+        raise ValueError("CLAUDE_PIDS_LIMIT must be an integer from 1 to 65536")
+
+
 def validate(config):
     for key in ("WORKSPACE", "ANTHROPIC_BASE_URL", "MODEL_API_KEY_FILE"):
         if not config.get(key):
             raise ValueError(f"{key} is required")
+    validate_resources(config)
     try:
         ZoneInfo(config["TZ"])
     except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -210,6 +237,10 @@ def main():
         (session / "project.txt").write_text(project + "\n")
         print(f"Starting isolated project {project}", file=sys.stderr)
         print(f"Version: {records[0][1]['org.opencontainers.image.version']}", file=sys.stderr)
+        print(f"Resources: RAM {config['CLAUDE_MEMORY_LIMIT']} (includes tmpfs/shm), swap disabled, "
+              f"PIDs {config['CLAUDE_PIDS_LIMIT']}, shm {config['CLAUDE_SHM_SIZE']}, "
+              f"HOME {config['CLAUDE_HOME_TMPFS_SIZE']}, /tmp {config['CLAUDE_TMP_TMPFS_SIZE']}",
+              file=sys.stderr)
         print("Project .claude/ is temporarily masked; workspace files remain persistent.", file=sys.stderr)
 
         def interrupted(sig, _frame):

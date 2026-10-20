@@ -29,6 +29,9 @@ The harness uses the production `compose.yaml` and a temporary override:
   fixture. No production domain/IP rule is weakened for tests.
 - The model key is a fixed fake string. The fixture records request type,
   hostname, path, and stream/tool flags, but never credentials or prompt bodies.
+- The resource profile is explicitly fixed to 8 GiB RAM, no container swap,
+  1024 processes/threads, 1 GiB shared memory, and 4 GiB each for HOME and `/tmp`.
+  Host environment overrides cannot change these regression values.
 - Cleanup removes only resources created under this test's unique project and
   container names. No existing proxy configuration or container is touched.
 
@@ -66,6 +69,13 @@ The harness uses the production `compose.yaml` and a temporary override:
 10. The fixture audit confirms numeric upstream CONNECT destinations and that
     no official/telemetry HTTP request reached it. Stopping the fixture makes
     subsequent requests fail closed.
+11. Docker resource settings and effective cgroup v2 limits match the fixed
+    profile. Filesystem capacity checks verify `/dev/shm`, HOME, and `/tmp`.
+    A probe writes and reads 96 MiB of shared memory, crossing the previous
+    64 MiB limit, then removes its file. It starts 300 concurrent threads,
+    crossing the previous 256-task limit, then releases and joins every thread.
+    No OOM events may occur. This bounded check does not fill the 8 GiB budget
+    or deliberately trigger OOM.
 
 Go's `net/http` parser canonicalizes a plain HTTP absolute-form request's Host
 from its request-target before handing it to the gateway. For a conflicting raw
@@ -81,6 +91,12 @@ and the production policy present in the checkout. GitHub Actions runs it on
 native amd64 and arm64 runners before updating release tags. A fixture test does
 not validate the user's real API credential, real model gateway, host proxy
 availability, or all internet software.
+
+The resource checks verify usable settings and the old shared-memory/thread
+boundaries; they do not measure a particular development project's peak memory
+needs. tmpfs and shared-memory sizes are ceilings, not reservations, and their
+actual usage shares the container's total RAM limit. The harness neither changes
+Docker Desktop's VM allocation nor enables swap.
 
 The harness tests both non-interactive print mode and an actual interactive PTY.
 The default interactive test confirms only the disposable fixture workspace and

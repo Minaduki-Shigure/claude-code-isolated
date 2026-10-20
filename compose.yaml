@@ -52,9 +52,11 @@ services:
     restart: "no"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    pids_limit: 256
-    mem_limit: 4g
-    memswap_limit: 4g
+    pids_limit: ${CLAUDE_PIDS_LIMIT:-1024}
+    mem_limit: ${CLAUDE_MEMORY_LIMIT:-8g}
+    # Equal RAM+swap and RAM limits leave no container swap allowance.
+    memswap_limit: ${CLAUDE_MEMORY_LIMIT:-8g}
+    shm_size: ${CLAUDE_SHM_SIZE:-1g}
     ulimits:
       core: {soft: 0, hard: 0}
     working_dir: /workspace
@@ -99,8 +101,8 @@ services:
       - ipc:/run/claude-ipc:ro
       - preferences:/var/lib/claude-preferences
     tmpfs:
-      - /home/node:rw,nosuid,nodev,size=768m,uid=1000,gid=1000,mode=0700
-      - /tmp:rw,nosuid,nodev,size=768m,mode=1777
+      - /home/node:rw,nosuid,nodev,size=${CLAUDE_HOME_TMPFS_SIZE:-4g},uid=1000,gid=1000,mode=0700
+      - /tmp:rw,nosuid,nodev,size=${CLAUDE_TMP_TMPFS_SIZE:-4g},mode=1777
       - /run:rw,nosuid,nodev,noexec,size=32m,uid=1000,gid=1000,mode=0755
       - /workspace/.claude:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700
     logging: {driver: none}

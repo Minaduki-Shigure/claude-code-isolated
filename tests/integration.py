@@ -20,6 +20,86 @@ DIGEST_IMAGE = re.compile(r"^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$")
 MODEL = "claude-sonnet-4-5-20250929"
 PREFERENCE_MODEL = "claude-opus-5-5"
 
+RESOURCE_PROBE = r'''
+import json, os, pathlib, tempfile, threading, time
+checks = []
+cgroup = pathlib.Path("/sys/fs/cgroup")
+assert (cgroup / "cgroup.controllers").is_file(), "cgroup v2 is required"
+for filename, expected, label in (
+    ("memory.max", 8 * 1024 ** 3, "memory-limit-8g"),
+    ("memory.swap.max", 0, "container-swap-disabled"),
+    ("pids.max", 1024, "process-thread-limit-1024"),
+):
+    actual = int((cgroup / filename).read_text().strip())
+    assert actual == expected, (filename, actual, expected)
+    checks.append(label)
+
+def memory_events():
+    return dict((name, int(value)) for name, value in
+                (line.split() for line in (cgroup / "memory.events").read_text().splitlines()))
+
+before_events = memory_events()
+for directory, expected, label in (
+    ("/dev/shm", 1024 ** 3, "shared-memory-capacity-1g"),
+    ("/home/node", 4 * 1024 ** 3, "home-tmpfs-capacity-4g"),
+    ("/tmp", 4 * 1024 ** 3, "temporary-files-capacity-4g"),
+):
+    stats = os.statvfs(directory)
+    actual = stats.f_blocks * stats.f_frsize
+    assert actual == expected, (directory, actual, expected)
+    checks.append(label)
+
+# Cross the former 64 MiB shared-memory limit with bounded, non-sparse writes.
+# The file is removed on every Python exception, without filling the mount.
+with tempfile.NamedTemporaryFile(prefix="resource-probe-", dir="/dev/shm") as shared:
+    shared_path = pathlib.Path(shared.name)
+    block = b"S" * (1024 ** 2)
+    for _ in range(96):
+        shared.write(block)
+    shared.flush()
+    file_stats = os.fstat(shared.fileno())
+    assert file_stats.st_size == 96 * 1024 ** 2
+    assert file_stats.st_blocks * 512 >= file_stats.st_size, "shared-memory file is sparse"
+    shared.seek(-len(block), os.SEEK_END)
+    assert shared.read() == block
+checks.append("shared-memory-96m-written-and-read")
+assert not shared_path.exists(), "shared-memory probe file was not removed"
+checks.append("shared-memory-probe-file-removed")
+
+# Hold 300 threads concurrently to cross the old 256-task limit. The small
+# stack and bounded waits avoid a memory stress test or surviving test threads.
+threading.stack_size(256 * 1024)
+ready = threading.Semaphore(0)
+release = threading.Event()
+threads = []
+def worker():
+    ready.release()
+    release.wait(timeout=30)
+try:
+    for _ in range(300):
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        threads.append(thread)
+    deadline = time.monotonic() + 15
+    for _ in threads:
+        assert ready.acquire(timeout=max(0, deadline - time.monotonic())), "thread startup timed out"
+    assert all(thread.is_alive() for thread in threads)
+    assert int((cgroup / "pids.current").read_text()) >= 301
+    checks.append("300-concurrent-threads-started")
+finally:
+    release.set()
+    deadline = time.monotonic() + 10
+    for thread in threads:
+        thread.join(timeout=max(0, deadline - time.monotonic()))
+assert not any(thread.is_alive() for thread in threads), "probe threads were not joined"
+checks.append("300-probe-threads-joined")
+after_events = memory_events()
+for name in ("oom", "oom_kill"):
+    assert after_events.get(name, 0) == before_events.get(name, 0), (name, before_events, after_events)
+checks.append("resource-probe-no-oom-events")
+print(json.dumps({"checks": checks}))
+'''
+
 NETWORK_PROBE = r'''
 import calendar, fcntl, json, os, pathlib, socket, ssl, struct, subprocess, time
 checks = []
@@ -508,6 +588,10 @@ def main():
         env.update({
             "COMPOSE_DISABLE_ENV_FILE": "1",
             "TZ": "America/Los_Angeles",
+            # Pin the regression profile rather than inheriting host overrides.
+            "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
+            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "4g",
+            "CLAUDE_TMP_TMPFS_SIZE": "4g",
             "CLAUDE_IMAGE": args.runtime_image, "GATEWAY_IMAGE": args.gateway_image,
             "WORKSPACE": str(workspace), "SETTINGS_FILE": str(settings),
             "STARTUP_STATE_FILE": str(startup_default),
@@ -596,6 +680,10 @@ else:
             assert "ALL" in host["CapDrop"]
             assert any("no-new-privileges" in value for value in host["SecurityOpt"])
             assert host["LogConfig"]["Type"] == "none"
+            assert host["Memory"] == 8 * 1024 ** 3
+            assert host["MemorySwap"] == host["Memory"]
+            assert host["PidsLimit"] == 1024
+            assert host["ShmSize"] == 1024 ** 3
             assert info["Config"]["User"] in ("1000:1000", "1000", "node")
             mounts = {item["Destination"]: item for item in info["Mounts"]}
             assert mounts["/workspace"]["RW"]
@@ -610,6 +698,7 @@ else:
             checks.extend(["compose-net-none", "nonroot-readonly-dropped-capabilities",
                            "no-new-privileges", "docker-logging-disabled",
                            "only-workspace-writable-host-bind", "session-state-on-tmpfs"])
+            probe(RESOURCE_PROBE, "resources")
             probe(MEMORY_POLICY_PROBE, "memory-policy")
             _, result = probe(MODEL_PROBE, "model")
             summary["mock_session_id"] = result.get("session_id")

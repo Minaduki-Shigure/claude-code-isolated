@@ -124,6 +124,37 @@ trigger cleanup. SIGKILL, daemon failure and host crashes cannot execute cleanup
 After such an event, inspect the exact project named by the launch output;
 do not globally prune Docker resources.
 
+## Development resource limits
+
+Set these literal values in `.env`; changes apply to the next launch:
+
+| Setting | Default | Limit |
+| --- | --- | --- |
+| `CLAUDE_MEMORY_LIMIT` | `8g` | Total cgroup memory, including processes, charged page cache, tmpfs and shared memory |
+| `CLAUDE_PIDS_LIMIT` | `1024` | Processes and threads combined |
+| `CLAUDE_SHM_SIZE` | `1g` | `/dev/shm` capacity |
+| `CLAUDE_HOME_TMPFS_SIZE` | `4g` | Ephemeral `/home/node` capacity |
+| `CLAUDE_TMP_TMPFS_SIZE` | `4g` | Ephemeral `/tmp` capacity |
+
+Sizes accept positive whole numbers followed by `m` or `g` (MiB/GiB),
+case-insensitively. Each filesystem cap must fit within the memory limit;
+PIDs must be an integer from 1 to 65536. These caps do not reserve memory:
+all actual usage shares the single 8 GiB memory budget. The filesystem caps
+are not added to that budget. `memswap_limit` always equals the RAM limit,
+so container swap remains disabled.
+
+HOME holds runtime settings, session state and development tools' user caches;
+it is not the Mac user's home. Workspace files remain persistent, while HOME
+and temporary storage are discarded with the container.
+
+Leave room for the gateway and the OS in Docker Desktop's VM, for example a
+12 GiB VM for an 8 GiB CLI container. The launcher never changes or restarts
+Docker Desktop. The gateway stays capped at 512 MiB. No extra CPU quota is
+applied; Docker VM CPU settings still apply. `free` may report VM-wide memory,
+so use the cgroup limit and OOM counters when diagnosing the container.
+The V8 heap limit reported by a separate `node` command describes Node,
+not the official native Claude executable.
+
 ## Files and persistence
 
 | Path | Treatment |

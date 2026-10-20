@@ -24,6 +24,29 @@ cp .env.example .env
 | `HOST_PROXY_HOST` / `HOST_PROXY_PORT` | 默认 `host.docker.internal:6152` |
 | `TZ` | 默认 `America/Los_Angeles`，按季节自动切换 PST/PDT |
 
+开发资源也在 `.env` 中配置，修改后下次启动生效：
+
+| 配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `CLAUDE_MEMORY_LIMIT` | `8g` | 容器总内存硬上限，包含进程、计费页缓存、tmpfs 和共享内存 |
+| `CLAUDE_PIDS_LIMIT` | `1024` | 进程与线程的合计上限 |
+| `CLAUDE_SHM_SIZE` | `1g` | `/dev/shm` 容量上限 |
+| `CLAUDE_HOME_TMPFS_SIZE` | `4g` | `/home/node` 临时用户目录容量上限 |
+| `CLAUDE_TMP_TMPFS_SIZE` | `4g` | `/tmp` 临时目录容量上限 |
+
+容量只接受正整数加 `m` 或 `g`，对应 MiB/GiB，大小写均可。
+每个临时文件系统上限不能超过总内存上限；PIDs 接受 1–65536。
+这些上限不会预先分配内存，所有实际用量共享同一个 8 GiB 总预算，
+不会因 HOME、`/tmp` 和共享内存的上限相加而额外获得内存。
+容器 swap 继续禁用。HOME 用于运行配置、会话状态和开发工具的用户缓存，
+不是 Mac 主目录；项目文件仍在 `/workspace`，临时目录随容器删除而清空。
+
+Docker Desktop 虚拟机还需要给网关和系统留余量，例如为 8 GiB 容器配置
+12 GiB VM 内存；启动器不会自行修改或重启 Docker Desktop。
+网关仍限于 512 MiB，CPU 没有额外配额（受 Docker VM CPU 配置约束）。
+`free` 显示的 VM 总量不代表容器可用预算，应以 cgroup 限额及 OOM 事件为准。
+镜像内单独运行 `node` 测出的 V8 堆上限只描述 Node 进程，不是原生 Claude 的堆上限。
+
 配置文件按字面值解析，不执行 shell 表达式，也不展开 `$VARIABLE`。
 密钥不写入 `.env`、镜像或仓库；原始密钥文件建议设为 `0600`。
 部署目录、配置和密钥都必须位于 workspace 外，不能把整个主目录作为 workspace。
