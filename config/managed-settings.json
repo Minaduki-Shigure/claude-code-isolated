@@ -1,4 +1,5 @@
 {
+  "allowedProviders": ["customEndpoint"],
   "disableRemoteControl": true,
   "disableClaudeAiConnectors": true,
   "disableAllHooks": true,

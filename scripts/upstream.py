@@ -2,12 +2,15 @@
 """Lock and verify official Claude releases; image construction happens only in CI."""
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import tarfile
 import tempfile
 
 RELEASE_ROOT = "https://downloads.claude.ai/claude-code-releases"
@@ -23,6 +26,21 @@ TARGETS = {"amd64": "linux-x64", "arm64": "linux-arm64"}
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
 CHECKSUM = re.compile(r"[0-9a-f]{64}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+# Node 24's bundled npm (including npm 12.2.0) still ships these vulnerable
+# transitive dependencies. Same-major official patch releases, pinned by npm SRI:
+# CVE-2026-102276/102278 and CVE-2026-19534. Remove after upstream npm catches up.
+NPM_SECURITY_PATCHES = {
+    "brace-expansion": {
+        "version": "5.0.12",
+        "url": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz",
+        "integrity": "sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==",
+    },
+    "undici": {
+        "version": "6.28.1",
+        "url": "https://registry.npmjs.org/undici/-/undici-6.28.1.tgz",
+        "integrity": "sha512-zWpdTVD54H48CIybL0rWQ3ukpb9d23wM7eH5RtfdmeP70cWHNjtfo7P4vZX+5CoDcO53J4Pu5uXp7lNfjc6DRA==",
+    },
+}
 
 
 def download(url, destination):
@@ -138,6 +156,7 @@ def resolve(path):
     inputs = release_inputs(version, json.loads((path.parent / "manifest.json").read_text()))
     inputs["manifest_sha256"] = sha256(path.parent / "manifest.json")
     inputs["signing_fingerprint"] = SIGNING_FINGERPRINT
+    inputs["npm_security_patches"] = NPM_SECURITY_PATCHES
     for key, tag in BASE_TAGS.items():
         manifest = json.loads(subprocess.check_output(
             ["docker", "buildx", "imagetools", "inspect", tag,
@@ -175,19 +194,110 @@ def fetch(path, arch):
         destination.unlink()
         raise ValueError("Native binary size or SHA-256 does not match signed manifest")
     destination.chmod(0o755)
+    fetch_npm_patches(path.parent / "npm-patches")
     print(f"Verified signed native Claude Code {inputs['claude_version']} for linux/{arch}")
+
+
+def extract_npm_archive(archive, destination):
+    """Extract only ordinary files/directories below package/, never links."""
+    destination.mkdir(parents=True, exist_ok=False)
+    with tarfile.open(archive, "r:gz") as package:
+        for member in package.getmembers():
+            parts = Path(member.name).parts
+            if not parts or parts[0] != "package" or ".." in parts or "\\" in member.name:
+                raise ValueError("Unsafe npm package path")
+            if not member.isdir() and not member.isfile():
+                raise ValueError("npm patch archive contains links or special files")
+            target = destination.joinpath(*parts[1:])
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with package.extractfile(member) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(0o755 if member.mode & 0o111 else 0o644)
+
+
+def fetch_npm_patches(destination):
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, asset in NPM_SECURITY_PATCHES.items():
+        with tempfile.TemporaryDirectory(prefix="npm-security-patch-") as temp:
+            archive = Path(temp) / "package.tgz"
+            download(asset["url"], archive)
+            integrity = "sha512-" + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode()
+            if integrity != asset["integrity"]:
+                raise ValueError(f"npm patch SRI mismatch: {name}")
+            extract_npm_archive(archive, destination / name)
+            metadata = json.loads((destination / name / "package.json").read_text())
+            if metadata.get("name") != name or metadata.get("version") != asset["version"]:
+                raise ValueError(f"npm patch package identity mismatch: {name}")
+
+
+def apply_npm_patches(npm_root, patch_dir):
+    records = {}
+    for name, asset in NPM_SECURITY_PATCHES.items():
+        target, patch = npm_root / "node_modules" / name, patch_dir / name
+        if target.is_symlink() or not target.is_dir():
+            raise ValueError(f"Unexpected bundled npm tree for {name}")
+        current = json.loads((target / "package.json").read_text())
+        fixed = json.loads((patch / "package.json").read_text())
+        before = current.get("version", "")
+        if current.get("name") != name or not VERSION.fullmatch(before):
+            raise ValueError(f"Unexpected bundled npm package identity: {name}")
+        if fixed.get("name") != name or fixed.get("version") != asset["version"]:
+            raise ValueError(f"Invalid verified npm patch: {name}")
+        have, wanted = tuple(map(int, before.split("."))), tuple(map(int, asset["version"].split(".")))
+        if have[0] != wanted[0]:
+            raise ValueError(f"npm changed {name} major version; review the security overlay")
+        if have >= wanted:
+            records[name] = {"before": before, "after": before, "action": "kept-newer-or-fixed"}
+            continue
+        if current.get("dependencies", {}) != fixed.get("dependencies", {}):
+            raise ValueError(f"npm patch would change transitive requirements: {name}")
+        # Any dependency-lock metadata must continue to describe the actual
+        # installed bundle. Current official npm tarballs contain no lockfiles.
+        for lock_path in (npm_root / "package-lock.json", npm_root / "npm-shrinkwrap.json",
+                          npm_root / "node_modules" / ".package-lock.json"):
+            if not lock_path.exists():
+                continue
+            lock = json.loads(lock_path.read_text())
+            if lock.get("lockfileVersion") not in (1, 2, 3):
+                raise ValueError("Unknown bundled npm lockfile format")
+            entries = [
+                lock.get("packages", {}).get(f"node_modules/{name}"),
+                lock.get("dependencies", {}).get(name),
+            ]
+            for entry in entries:
+                if entry is not None:
+                    if entry.get("version") != before:
+                        raise ValueError(f"Stale bundled npm lockfile for {name}")
+                    entry.update(version=asset["version"], resolved=asset["url"],
+                                 integrity=asset["integrity"])
+            lock_path.write_text(json.dumps(lock, indent=2) + "\n")
+        shutil.rmtree(target)
+        shutil.copytree(patch, target)
+        records[name] = {"before": before, "after": asset["version"], "action": "patched",
+                         "integrity": asset["integrity"]}
+    print(json.dumps(records, sort_keys=True))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("resolve", "fetch", "verify-manifest"))
+    parser.add_argument("command", choices=("resolve", "fetch", "verify-manifest",
+                                           "fetch-npm-patches", "apply-npm-patches"))
     parser.add_argument("--lock", type=Path, default=Path("dist/build-inputs.json"))
     parser.add_argument("--arch", choices=TARGETS)
+    parser.add_argument("--patch-dir", type=Path, default=Path("dist/npm-patches"))
+    parser.add_argument("--npm-root", type=Path, default=Path("/usr/local/lib/node_modules/npm"))
     args = parser.parse_args()
     if args.command == "resolve":
         resolve(args.lock)
     elif args.command == "verify-manifest":
         verify_manifest(args.lock.parent)
+    elif args.command == "fetch-npm-patches":
+        fetch_npm_patches(args.patch_dir)
+    elif args.command == "apply-npm-patches":
+        apply_npm_patches(args.npm_root, args.patch_dir)
     elif args.arch:
         fetch(args.lock, args.arch)
     else:

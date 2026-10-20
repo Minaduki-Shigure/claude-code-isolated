@@ -34,8 +34,11 @@ The harness uses the production `compose.yaml` and a temporary override:
 
 ## What is verified
 
-1. Runtime network mode is `none`, only loopback exists, direct IPv4/IPv6,
-   direct host proxy access, and direct UDP DNS fail. AF_VSOCK creation fails.
+1. Runtime network mode is `none`; no non-loopback interface has `IFF_UP`, the
+   IPv4 route table is empty, and IPv6 routes reference only loopback. Direct
+   IPv4/IPv6, direct host proxy access, and direct UDP DNS fail. AF_VSOCK creation
+   fails. DOWN kernel fallback tunnel devices, which some LinuxKit versions expose
+   even in an isolated namespace, do not count as usable network connectivity.
 2. The runtime and actual gateway worker run as UID 1000 with zero effective and
    bounding capabilities and `NoNewPrivs=1`. Runtime rootfs is read-only and Docker
    logging is disabled. The workspace is the sole writable host bind mount.
@@ -91,3 +94,25 @@ The protocol fixture follows the official
 [Messages streaming event sequence](https://platform.claude.com/docs/en/build-with-claude/streaming).
 The CLI test uses the documented
 [`--no-session-persistence` print-mode flag](https://code.claude.com/docs/en/cli-reference).
+
+## Real host proxy smoke test
+
+After pulling a matched pair of tested digests, verify the actual host proxy:
+
+```sh
+python3 tests/host_proxy_smoke.py \
+  --runtime-image ghcr.io/OWNER/claude-code-isolated@sha256:RUNTIME_DIGEST \
+  --gateway-image ghcr.io/OWNER/claude-code-isolated-gateway@sha256:GATEWAY_DIGEST \
+  --host-proxy-host host.docker.internal --host-proxy-port 6152 \
+  --output host-proxy-verification.json
+```
+
+This test invokes the production launcher with `--pull never`, a disposable
+workspace, and a fake key. It neither builds nor pulls images and makes no model
+request. Its only allowed live origin is `example.com`, over HTTP and HTTPS;
+the gateway also uses its configured DoH service. Known official endpoints,
+telemetry names, and IP literals must be rejected by the local gateway. Direct
+sockets and a request with all proxy variables removed must fail. Finally it
+checks normal-exit and SIGTERM cleanup using each launcher's reported random
+project label, including removal of staged configuration and credential files.
+It does not alter the host proxy or manage unrelated Docker resources.

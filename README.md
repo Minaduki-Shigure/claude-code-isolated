@@ -1,5 +1,7 @@
 # Isolated Claude Code
 
+[中文使用说明](README.zh-CN.md)
+
 Disposable Claude Code with general HTTP/HTTPS access through a filtering
 gateway and an existing host HTTP proxy. Only the selected workspace and
 explicit configuration survive a session. Images are built in GitHub Actions;
@@ -183,6 +185,14 @@ The runtime image contains the official Claude binary, Node, Python, Git,
 curl, jq, ripgrep and basic tools. The gateway image has a standard-library Go
 proxy and the small firewall/init dependencies. Model credentials and project
 files are never in the build context.
+
+The Node base's npm bundle currently needs two security repairs:
+`brace-expansion` 5.0.12 and `undici` 6.28.1. CI downloads their official npm
+tarballs with fixed SHA-512 integrity values and replaces only older versions
+within the same major. Changed dependency requirements or unexpected layouts
+stop the build; newer fixed versions are preserved. Any existing lock metadata
+is updated, and npm/module smoke tests run without network access. The exact
+repair record is saved at `/usr/local/share/claude-isolation/npm-security-repairs.json`.
 
 A blocked update leaves the previous tested `latest` usable. Review Actions
 failures; do not weaken the security gate just to obtain a new version.

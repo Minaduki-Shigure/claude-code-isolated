@@ -50,6 +50,16 @@ RUN test -n "$BUILD_DATE" \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o node -g node /workspace \
     && install -d -m 0755 /opt/claude-isolation /etc/claude-code
+# Repair only the two confirmed vulnerable npm dependencies, keeping the same
+# major versions. No install hooks or network access during patch application.
+COPY dist/npm-patches/ /tmp/npm-patches/
+COPY scripts/upstream.py /tmp/build-upstream.py
+RUN --network=none mkdir -p /usr/local/share/claude-isolation \
+    && python3 /tmp/build-upstream.py apply-npm-patches --patch-dir /tmp/npm-patches \
+       > /usr/local/share/claude-isolation/npm-security-repairs.json \
+    && npm --version \
+    && node -e "const p='/usr/local/lib/node_modules/npm/node_modules/'; const b=require(p+'brace-expansion'); if(b.expand('a{b,c}').join(',')!=='ab,ac')throw Error('brace expansion failed'); const u=require(p+'undici'); if(typeof u.request!=='function')throw Error('undici load failed')" \
+    && rm -rf /tmp/npm-patches /tmp/build-upstream.py /root/.npm
 # Fetch in CI first, check the signed release manifest, then copy the raw native
 # executable. Never run an upstream install script or install into the user's HOME.
 COPY --chmod=0555 dist/claude /usr/local/bin/claude

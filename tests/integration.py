@@ -20,13 +20,28 @@ DIGEST_IMAGE = re.compile(r"^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$")
 MODEL = "claude-sonnet-4-5-20250929"
 
 NETWORK_PROBE = r'''
-import json, os, pathlib, socket, ssl, subprocess
+import fcntl, json, os, pathlib, socket, ssl, struct, subprocess
 checks = []
 def check(name, value, detail=""):
     if not value:
         raise AssertionError(name + (": " + detail[:300] if detail else ""))
     checks.append(name)
-check("only-loopback-interface", set(os.listdir("/sys/class/net")) == {"lo"})
+# Some LinuxKit kernels expose DOWN fallback tunnel devices even with Docker
+# network_mode=none. Inspect actual interfaces/flags and routing, not filenames.
+interfaces = dict((name, index) for index, name in socket.if_nameindex())
+check("loopback-interface-present", "lo" in interfaces)
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+    for name in interfaces:
+        flags = struct.unpack_from("H", fcntl.ioctl(
+            control.fileno(), 0x8913, struct.pack("256s", name.encode())), 16)[0]
+        check("interface-not-externally-up:" + name,
+              bool(flags & 0x8) if name == "lo" else not bool(flags & 0x1))
+routes4 = pathlib.Path("/proc/net/route").read_text().splitlines()[1:]
+check("no-ipv4-routes", not any(line.strip() for line in routes4))
+routes6 = pathlib.Path("/proc/net/ipv6_route")
+check("no-nonloopback-ipv6-routes", not routes6.exists() or
+      all(line.split()[-1] == "lo" for line in routes6.read_text().splitlines()
+          if line.strip()))
 status = dict(line.split(":", 1) for line in pathlib.Path("/proc/self/status").read_text().splitlines() if ":" in line)
 check("runtime-no-effective-or-bounding-capabilities",
       int(status["CapEff"], 16) == 0 and int(status["CapBnd"], 16) == 0)
@@ -178,7 +193,8 @@ command = ["claude", "--setting-sources", "user", "--no-chrome",
            "--model", os.environ["ANTHROPIC_MODEL"], "--tools", "Bash",
            "--allowedTools", "Bash", "--max-turns", "3",
            "Offline integration test " + token]
-p = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+p = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE, text=True, timeout=120)
 if p.returncode:
     raise AssertionError("Claude print-mode failed: " + p.stderr[-2000:] + p.stdout[-2000:])
 lines = [line for line in p.stdout.splitlines() if line.strip().startswith("{")]
@@ -222,7 +238,8 @@ print(json.dumps({"checks": ["home-state-not-persistent", "tmp-not-persistent",
 
 
 def command(args, *, timeout=180, check=True, env=None):
-    result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    result = subprocess.run(args, text=True, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=timeout, env=env)
     if check and result.returncode:
         raise RuntimeError(f"command failed ({result.returncode}): {' '.join(args[:5])}\n"
@@ -257,6 +274,10 @@ DNS.5 = github.com
     command(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
              "-config", str(config), "-keyout", str(directory / "key.pem"),
              "-out", str(directory / "cert.pem")])
+    # The fixture runs with all capabilities dropped, so UID0 cannot bypass
+    # the GitHub runner's ownership on a 0600 bind-mounted key. This disposable
+    # test key stays beneath the harness's 0700 temporary parent on the host.
+    os.chmod(directory / "key.pem", 0o644)
 
 
 def json_lines(output):
@@ -307,6 +328,7 @@ def main():
         write_json(settings, {"env": {"ISOLATION_SETTINGS_SENTINEL": "persistent-config"}})
         settings_hash = hashlib.sha256(settings.read_bytes()).hexdigest()
         managed = json.loads((ROOT / "config/managed-settings.json").read_text())
+        managed["allowedProviders"] = ["customEndpoint"]
         managed.setdefault("env", {})["ANTHROPIC_BASE_URL"] = "https://model.example.com"
         managed_path = tmp / "managed-settings.json"
         write_json(managed_path, managed)
@@ -386,7 +408,10 @@ def main():
                     break
                 time.sleep(0.2)
             if not ready:
-                raise AssertionError("offline fixture did not become ready")
+                state = json.loads(command(["docker", "inspect", fixture_id]).stdout)[0]["State"]
+                raise AssertionError("offline fixture did not become ready: " + json.dumps({
+                    key: state.get(key) for key in ("Status", "Running", "ExitCode", "Error")
+                }))
             dc("up", "-d", "--wait", "--wait-timeout", "45", "gateway", timeout=70)
             gateway_id = dc("ps", "-q", "gateway").stdout.strip()
             gateway_status = command(["docker", "exec", gateway_id, "sh", "-c",

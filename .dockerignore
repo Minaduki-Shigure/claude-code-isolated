@@ -5,6 +5,9 @@
 !scripts/
 !scripts/runtime-entrypoint.py
 !scripts/gateway-entrypoint.sh
+!scripts/upstream.py
 !dist/
 !dist/claude
 !dist/build-inputs.json
+!dist/npm-patches/
+!dist/npm-patches/**

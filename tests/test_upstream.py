@@ -1,6 +1,11 @@
 import copy
+import contextlib
 import importlib.util
+import io
+import json
 from pathlib import Path
+import tarfile
+import tempfile
 import unittest
 
 SPEC = importlib.util.spec_from_file_location(
@@ -74,6 +79,72 @@ class ReleaseInputsTests(unittest.TestCase):
         manifest["manifests"].pop()
         with self.assertRaises(ValueError):
             upstream.locked_base("node:24-bookworm-slim", manifest)
+
+
+class NpmSecurityPatchTests(unittest.TestCase):
+    def test_tarball_cannot_write_outside_package_or_create_links(self):
+        for name, kind in (("package/../../escape", tarfile.REGTYPE),
+                           ("package/link", tarfile.SYMTYPE)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                with tarfile.open(root / "bad.tgz", "w:gz") as package:
+                    info = tarfile.TarInfo(name)
+                    info.type, info.linkname = kind, "/tmp/escape"
+                    package.addfile(info)
+                with self.assertRaises(ValueError):
+                    upstream.extract_npm_archive(root / "bad.tgz", root / "out")
+                self.assertFalse((root / "escape").exists())
+
+    def tree(self, root, newer=False, wrong_deps=False):
+        npm, patches = root / "npm", root / "patches"
+        for name, asset in upstream.NPM_SECURITY_PATCHES.items():
+            current, patch = npm / "node_modules" / name, patches / name
+            current.mkdir(parents=True)
+            patch.mkdir(parents=True)
+            version = asset["version"] if newer else {"brace-expansion": "5.0.9", "undici": "6.28.0"}[name]
+            if newer:
+                version = ".".join(version.split(".")[:2] + ["999"])
+            metadata = {"name": name, "version": version}
+            (current / "package.json").write_text(json.dumps(metadata))
+            metadata["version"] = asset["version"]
+            if wrong_deps:
+                metadata["dependencies"] = {"unexpected": "^1"}
+            (patch / "package.json").write_text(json.dumps(metadata))
+        return npm, patches
+
+    def test_patches_installed_versions_and_lock_metadata_together(self):
+        with tempfile.TemporaryDirectory() as temp:
+            npm, patches = self.tree(Path(temp))
+            lock = {"lockfileVersion": 3, "packages": {
+                "node_modules/brace-expansion": {"version": "5.0.9"},
+                "node_modules/undici": {"version": "6.28.0"},
+            }}
+            path = npm / "package-lock.json"
+            path.write_text(json.dumps(lock))
+            with contextlib.redirect_stdout(io.StringIO()):
+                upstream.apply_npm_patches(npm, patches)
+            lock = json.loads(path.read_text())
+            for name, asset in upstream.NPM_SECURITY_PATCHES.items():
+                installed = json.loads((npm / "node_modules" / name / "package.json").read_text())
+                self.assertEqual(installed["version"], asset["version"])
+                entry = lock["packages"]["node_modules/" + name]
+                self.assertEqual(entry["version"], asset["version"])
+                self.assertEqual(entry["integrity"], asset["integrity"])
+
+    def test_newer_dependencies_are_never_downgraded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            npm, patches = self.tree(Path(temp), newer=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                upstream.apply_npm_patches(npm, patches)
+            for name in upstream.NPM_SECURITY_PATCHES:
+                installed = json.loads((npm / "node_modules" / name / "package.json").read_text())
+                self.assertTrue(installed["version"].endswith(".999"))
+
+    def test_unexpected_dependency_graph_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            npm, patches = self.tree(Path(temp), wrong_deps=True)
+            with self.assertRaisesRegex(ValueError, "transitive requirements"):
+                upstream.apply_npm_patches(npm, patches)
 
 
 if __name__ == "__main__":
