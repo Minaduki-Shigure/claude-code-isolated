@@ -173,7 +173,11 @@ def dynamic_preferences():
         time.sleep(0.2)
         assert selected()["ultracode"] is True, "Preview changed committed preference"
         os.write(master, b"\x1b")
-        time.sleep(0.2)
+        # Drain the canceled menu before opening another one. Without this,
+        # current_text() can still contain the old menu and satisfy the next
+        # wait before the new dialog is ready to receive Tab/Enter.
+        until(lambda: "Tabtotoggle" not in current_text() and
+              "automodeon" in current_text())
         assert selected()["ultracode"] is True, "Cancel changed committed preference"
         previous = command("/effort")
         until(lambda: "Tabtotoggle" in current_text() and "Ultracode" in current_text())
