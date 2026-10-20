@@ -15,7 +15,7 @@ import uuid
 import importlib.util
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from startup_config import read_preferences, resolve_startup, save_selection, validate_selection
+from startup_config import read_preferences, resolve_startup, save_selection, should_remember, validate_selection
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -245,7 +245,7 @@ def main():
                 child.kill()
                 child.wait()
         preference_error = None
-        if cli_started and startup.get("rememberModelEffort", False):
+        if cli_started and should_remember(startup):
             try:
                 selection = collect_selection(project, config["CLAUDE_IMAGE"])
                 if selection is not None:
@@ -278,7 +278,7 @@ def main():
             print(f"Cleanup incomplete for {project}; private recovery files retained at {session}", file=sys.stderr)
             raise RuntimeError("Inspect only this project before retrying; no other containers were touched")
         if preference_error:
-            raise RuntimeError("Could not save model/effort preferences (" + preference_error + "); previous preferences were preserved")
+            raise RuntimeError("Could not save startup preferences (" + preference_error + "); previous preferences were preserved")
 
 
 if __name__ == "__main__":

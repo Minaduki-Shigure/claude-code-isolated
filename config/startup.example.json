@@ -1,5 +1,8 @@
 {
   "schemaVersion": 1,
   "trustedWorkspaces": [],
-  "approvedCredentials": []
+  "approvedCredentials": [],
+  "rememberModelEffort": false,
+  "rememberPermissionMode": false,
+  "rememberUltracode": false
 }

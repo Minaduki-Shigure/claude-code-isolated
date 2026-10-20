@@ -7,9 +7,12 @@ import re
 from urllib.parse import urlsplit
 
 PREFERENCE_KEYS = {"schemaVersion", "trustedWorkspaces", "approvedCredentials",
-                   "permissionMode", "effort", "ultracode", "model", "rememberModelEffort"}
-STATE_KEYS = {"trustWorkspace", "approveApiKey", "permissionMode", "effort", "ultracode", "model", "rememberModelEffort"}
-MODES = {"default", "auto"}
+                   "permissionMode", "effort", "ultracode", "model", "rememberModelEffort",
+                   "rememberPermissionMode", "rememberUltracode"}
+STATE_KEYS = {"trustWorkspace", "approveApiKey", "permissionMode", "effort", "ultracode", "model", "rememberModelEffort",
+                   "rememberPermissionMode", "rememberUltracode"}
+MODES = {"default", "auto", "acceptEdits", "plan", "dontAsk"}
+REMEMBER_FLAGS = ("rememberModelEffort", "rememberPermissionMode", "rememberUltracode")
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
@@ -32,10 +35,11 @@ def validate_model(value):
 def validate_options(value):
     if "model" in value:
         validate_model(value["model"])
-    if "rememberModelEffort" in value and type(value["rememberModelEffort"]) is not bool:
-        raise ValueError("Startup rememberModelEffort must be boolean")
+    for name in REMEMBER_FLAGS:
+        if name in value and type(value[name]) is not bool:
+            raise ValueError(f"Startup {name} must be boolean")
     if "permissionMode" in value and (not isinstance(value["permissionMode"], str) or value["permissionMode"] not in MODES):
-        raise ValueError("Startup permissionMode must be default or auto")
+        raise ValueError("Startup permissionMode must be default, auto, acceptEdits, plan or dontAsk")
     if "effort" in value and (not isinstance(value["effort"], str) or value["effort"] not in EFFORTS):
         raise ValueError("Startup effort must be low, medium, high, xhigh or max")
     if "ultracode" in value and type(value["ultracode"]) is not bool:
@@ -93,7 +97,7 @@ def resolve_startup(preferences, workspace, base_url, auth_mode, key):
         "trustWorkspace": str(Path(workspace).resolve()) in preferences.get("trustedWorkspaces", []),
         "approveApiKey": auth_mode == "api-key" and approved,
     }
-    state.update({name: preferences[name] for name in ("permissionMode", "effort", "ultracode", "model", "rememberModelEffort")
+    state.update({name: preferences[name] for name in ("permissionMode", "effort", "ultracode", "model", *REMEMBER_FLAGS)
                   if name in preferences})
     return validate_state(state)
 
@@ -109,8 +113,8 @@ def validate_state(value):
 
 
 def validate_selection(value):
-    """Only these two bounded preference values may cross back to the host."""
-    if not isinstance(value, dict) or set(value) - {"model", "effort"}:
+    """Only four bounded preference values may cross back to the host."""
+    if not isinstance(value, dict) or set(value) - {"model", "effort", "permissionMode", "ultracode"}:
         raise ValueError("Unsupported exported preference keys")
     validate_model(value.get("model"))
     validate_options(value)
@@ -134,8 +138,12 @@ def read_selection(path):
         return validate_selection(json.loads(data))
 
 
+def should_remember(value):
+    return any(value.get(name, False) for name in REMEMBER_FLAGS)
+
+
 def save_selection(path, selection):
-    """Merge only model/effort; serialize concurrent launcher exits atomically."""
+    """Merge only enabled preference fields; serialize launcher exits atomically."""
     import fcntl
     import os
     import tempfile
@@ -145,13 +153,23 @@ def save_selection(path, selection):
     with os.fdopen(lock_fd, "r+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         preferences = read_preferences(path)
-        if not preferences.get("rememberModelEffort", False):
+        if not should_remember(preferences):
             return False
-        preferences["model"] = selection["model"]
-        if "effort" in selection:
-            preferences["effort"] = selection["effort"]
-        else:
-            preferences.pop("effort", None)
+        updated = False
+        if preferences.get("rememberModelEffort", False):
+            preferences["model"] = selection["model"]
+            if "effort" in selection:
+                preferences["effort"] = selection["effort"]
+            else:
+                preferences.pop("effort", None)
+            updated = True
+        for name, flag in (("permissionMode", "rememberPermissionMode"),
+                           ("ultracode", "rememberUltracode")):
+            if preferences.get(flag, False) and name in selection:
+                preferences[name] = selection[name]
+                updated = True
+        if not updated:
+            return False
         validate_preferences(preferences)
         fd, temporary = tempfile.mkstemp(prefix=".startup-selection-", dir=path.parent)
         try:

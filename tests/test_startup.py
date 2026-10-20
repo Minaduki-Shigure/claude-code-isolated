@@ -1,6 +1,7 @@
 """Approval identity and disposable-state boundaries; no Docker or real keys."""
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import stat
@@ -163,7 +164,7 @@ class StartupBoundaryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.read(dict(self.preferences, rememberModelEffort=value))
 
-    def test_selection_accepts_only_bounded_model_and_effort(self):
+    def test_selection_rejects_unknown_keys_and_unbounded_model_or_effort(self):
         for value in ({"model": "claude-opus-4-7"},
                       {"model": "provider/claude-opus-4-7[1m]", "effort": "max"}):
             self.assertEqual(startup.validate_selection(value), value)
@@ -175,11 +176,85 @@ class StartupBoundaryTests(unittest.TestCase):
             {"model": "claude-opus-4-7", "effort": None},
             {"model": "claude-opus-4-7", "env": {"HOME": "/workspace"}},
             {"model": "claude-opus-4-7", "approvedCredentials": []},
-            {"model": "claude-opus-4-7", "permissionMode": "auto"},
+            {"model": "claude-opus-4-7", "permissionMode": "bypassPermissions"},
         ):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     startup.validate_selection(value)
+
+    def test_permission_modes_and_ultracode_have_the_same_strict_schema_everywhere(self):
+        for mode in ("default", "acceptEdits", "plan", "auto", "dontAsk"):
+            for enabled in (False, True):
+                with self.subTest(mode=mode, ultracode=enabled):
+                    preferences = dict(self.preferences, permissionMode=mode,
+                                       ultracode=enabled, rememberPermissionMode=True,
+                                       rememberUltracode=True)
+                    state = self.resolve(preferences)
+                    self.assertEqual(state["permissionMode"], mode)
+                    self.assertIs(state["ultracode"], enabled)
+                    self.assertTrue(state["rememberPermissionMode"])
+                    self.assertTrue(state["rememberUltracode"])
+                    selection = {"model": "sonnet", "permissionMode": mode,
+                                 "ultracode": enabled}
+                    self.assertEqual(startup.validate_selection(selection), selection)
+        for field, invalid in (
+            ("permissionMode", "bypassPermissions"), ("permissionMode", "manual"),
+            ("permissionMode", "acceptedits"), ("permissionMode", True),
+            ("permissionMode", None), ("ultracode", "false"),
+            ("ultracode", 0), ("ultracode", None),
+        ):
+            with self.subTest(field=field, invalid=invalid):
+                with self.assertRaises(ValueError):
+                    self.read(dict(self.preferences, **{field: invalid}))
+                with self.assertRaises(ValueError):
+                    startup.validate_selection(dict(model="sonnet", **{field: invalid}))
+        for flag in ("rememberPermissionMode", "rememberUltracode"):
+            for invalid in ("true", 1, None):
+                with self.subTest(flag=flag, invalid=invalid):
+                    with self.assertRaises(ValueError):
+                        self.read(dict(self.preferences, **{flag: invalid}))
+        for forbidden in ("permissions", "skipAutoPermissionPrompt", "sessions",
+                          "rememberModelEffort", "rememberPermissionMode", "rememberUltracode"):
+            with self.subTest(forbidden=forbidden):
+                with self.assertRaises(ValueError):
+                    startup.validate_selection({"model": "sonnet", forbidden: True})
+
+    def test_each_remember_switch_controls_only_its_own_preference_fields(self):
+        selection = {"model": "sonnet", "effort": "low",
+                     "permissionMode": "plan", "ultracode": False}
+        for model, mode, ultra in itertools.product((False, True), repeat=3):
+            with self.subTest(model=model, mode=mode, ultra=ultra):
+                original = dict(self.preferences, model="previous-model",
+                                rememberModelEffort=model, rememberPermissionMode=mode,
+                                rememberUltracode=ultra)
+                self.read(original)
+                result = startup.save_selection(self.path, selection)
+                expected = dict(original)
+                if model:
+                    expected.update(model="sonnet", effort="low")
+                if mode:
+                    expected["permissionMode"] = "plan"
+                if ultra:
+                    expected["ultracode"] = False
+                self.assertIs(result, model or mode or ultra)
+                self.assertEqual(startup.read_preferences(self.path), expected)
+
+    def test_missing_new_fields_preserve_previous_values_and_do_not_change_other_preferences(self):
+        original = dict(self.preferences, model="previous-model", rememberModelEffort=True,
+                        rememberPermissionMode=True, rememberUltracode=True)
+        self.read(original)
+        self.assertTrue(startup.save_selection(self.path, {"model": "sonnet"}))
+        expected = dict(original, model="sonnet")
+        expected.pop("effort")
+        self.assertEqual(startup.read_preferences(self.path), expected)
+        # Disabling model memory also prevents an absent effort from clearing it.
+        original["rememberModelEffort"] = False
+        self.read(original)
+        self.assertTrue(startup.save_selection(self.path, {
+            "model": "sonnet", "permissionMode": "acceptEdits", "ultracode": False,
+        }))
+        expected = dict(original, permissionMode="acceptEdits", ultracode=False)
+        self.assertEqual(startup.read_preferences(self.path), expected)
 
     def test_selection_file_is_optional_bounded_and_never_follows_symlinks(self):
         outbox = self.root / "selection.json"

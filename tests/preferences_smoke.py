@@ -34,8 +34,10 @@ DIGEST_IMAGE = re.compile(r"^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$")
 PROJECT = re.compile(r"Starting isolated project (cc-isolated-[0-9a-f]{12})")
 ANSI = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
 FAKE_KEY = "preference-smoke-fake-key-no-account-no-billing"
-INITIAL = {"model": "claude-opus-5-5", "effort": "high"}
-FINAL = {"model": "claude-sonnet-5-5", "effort": "max"}
+INITIAL = {"model": "claude-opus-5-5", "effort": "high",
+           "permissionMode": "auto", "ultracode": True}
+FINAL = {"model": "claude-sonnet-5-5", "effort": "max",
+         "permissionMode": "acceptEdits", "ultracode": False}
 CONFIRMATIONS = ("Yes,Itrustthisfolder", "DoyouwanttousethisAPIkey?")
 READ_SELECTION = r"""
 import json, os, stat, sys
@@ -208,7 +210,7 @@ class InteractiveLauncher:
         if len(result.stdout) > 4096:
             raise AssertionError("preference snapshot exceeded 4 KiB")
         value = json.loads(result.stdout)
-        if not isinstance(value, dict) or set(value) != {"model", "effort"}:
+        if not isinstance(value, dict) or set(value) - {"model", "effort", "permissionMode", "ultracode"}:
             raise AssertionError("snapshot contains unexpected persistent fields")
         return value
 
@@ -225,7 +227,8 @@ class InteractiveLauncher:
                              + self.text()[-1500:])
 
     def command(self, value):
-        if value not in ("/model sonnet", "/effort low", "/effort max", "/exit"):
+        if value not in ("/model sonnet", "/effort low", "/effort max", "/effort",
+                         "/effort ultracode off", "/effort ultracode on", "/exit"):
             raise AssertionError("test input must be an approved built-in slash command")
         self.check_ui()
         os.write(self.master, value.encode())
@@ -266,7 +269,7 @@ class InteractiveLauncher:
 
 def check_host_config(startup, expected, workspace):
     if json.loads(startup.read_text()) != expected:
-        raise AssertionError("host startup preferences changed outside model/effort")
+        raise AssertionError("host startup preferences changed outside the four permitted values")
     if stat.S_IMODE(startup.stat().st_mode) != 0o600:
         raise AssertionError("host startup preferences must have mode 0600")
     if set(workspace.iterdir()) != {workspace / ".claude"} or any((workspace / ".claude").iterdir()):
@@ -316,7 +319,8 @@ def main():
                     "keySha256": hashlib.sha256(FAKE_KEY.encode()).hexdigest(),
                 }],
                 "permissionMode": "auto", "ultracode": True,
-                "rememberModelEffort": True, **INITIAL,
+                "rememberModelEffort": True, "rememberPermissionMode": True,
+                "rememberUltracode": True, **INITIAL,
             }
             startup.write_text(json.dumps(original, indent=2) + "\n")
             values = {
@@ -354,20 +358,47 @@ def main():
                     if iteration == 1:
                         check_host_config(startup, original, workspace)
                         for command, selection in (
-                            ("/model sonnet", {"model": FINAL["model"], "effort": "high"}),
-                            ("/effort low", {"model": FINAL["model"], "effort": "low"}),
-                            ("/effort max", FINAL),
+                            ("/model sonnet", {**INITIAL, "model": FINAL["model"]}),
+                            ("/effort low", {**INITIAL, "model": FINAL["model"], "effort": "low"}),
+                            ("/effort max", {**INITIAL, "model": FINAL["model"], "effort": "max"}),
                         ):
                             session.command(command)
                             session.wait_snapshot(selection)
-                        summary["checks"].append("native-statusline-tracks-model-low-and-session-only-max")
+                        selected = {**INITIAL, "model": FINAL["model"], "effort": "max"}
+                        session.command("/effort")
+                        time.sleep(0.4)
+                        os.write(session.master, b"\t")
+                        time.sleep(0.4)
+                        if session.snapshot() != selected:
+                            raise AssertionError("unapplied effort menu preview changed preferences")
+                        os.write(session.master, b"\x1b")
+                        time.sleep(0.4)
+                        session.wait_snapshot(selected)
+                        for mode in ("default", "acceptEdits"):
+                            os.write(session.master, b"\x1b[Z")
+                            selected["permissionMode"] = mode
+                            session.wait_snapshot(selected)
+                        session.command("/effort ultracode off")
+                        session.wait_snapshot(FINAL)
+                        fcntl.ioctl(session.master, termios.TIOCSWINSZ,
+                                    struct.pack("HHHH", 34, 100, 0, 0))
+                        os.killpg(session.process.pid, signal.SIGWINCH)
+                        time.sleep(0.5)
+                        session.wait_snapshot(FINAL)
+                        summary["checks"].extend([
+                            "native-statusline-tracks-model-low-and-session-only-max",
+                            "native-effort-menu-cancel-keeps-ultracode",
+                            "native-shift-tab-tracks-manual-and-accept-edits",
+                            "native-ultracode-off-persists-false",
+                            "terminal-resize-preserves-current-preferences",
+                        ])
                     session.exit()
                     check_host_config(startup, expected, workspace)
                     if settings.read_text() != "{}\n" or key.read_text() != FAKE_KEY:
                         raise AssertionError("readonly input configuration changed")
                     summary["checks"].extend([
                         f"launch-{iteration}-accepts-slash-commands-without-confirmations",
-                        f"launch-{iteration}-persists-only-model-and-effort-mode-0600",
+                        f"launch-{iteration}-persists-only-four-preferences-mode-0600",
                         f"launch-{iteration}-removes-owned-resources-and-staging",
                         f"launch-{iteration}-leaves-no-workspace-session-files",
                     ])
@@ -375,7 +406,7 @@ def main():
                 finally:
                     session.close(failed)
                 print(f"PASS preference launcher PTY: launch {iteration}", flush=True)
-            summary["checks"].append("second-launch-restores-last-model-and-max-without-overrides")
+            summary["checks"].append("second-launch-restores-model-max-permission-mode-and-ultracode-off")
             summary["passed"] = True
     except BaseException as exc:
         summary["error"] = str(exc)

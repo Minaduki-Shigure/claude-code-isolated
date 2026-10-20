@@ -17,6 +17,8 @@ import termios
 import time
 import uuid
 
+import pyte
+
 
 LAUNCH = ["python3", "/opt/claude-isolation/launch-claude.py"]
 SELECTION = Path("/var/lib/claude-preferences/selection.json")
@@ -67,9 +69,9 @@ def sdk_preferences(startup):
                             assert not value.get("errors"), value.get("errors")
                             result["applied"] = value["applied"]
                             effective = value["effective"]
-                            assert effective["permissions"]["defaultMode"] == "auto"
+                            assert effective["permissions"]["defaultMode"] == startup["permissionMode"]
                             assert effective["skipAutoPermissionPrompt"] is True
-                            assert effective["ultracode"] is True
+                            assert effective["ultracode"] is startup["ultracode"]
                             send({"type": "user", "message": {"role": "user",
                                   "content": "Return the offline preference test result."},
                                   "parent_tool_use_id": None, "session_id": ""})
@@ -78,12 +80,12 @@ def sdk_preferences(startup):
                     elif frame.get("type") == "result":
                         assert not frame.get("is_error"), frame
                         assert "ISOLATION_MOCK_SUCCESS" in frame.get("result", ""), frame
-                        assert result["permissionMode"] == "auto", result
+                        assert result["permissionMode"] == startup["permissionMode"], result
                         applied = result["applied"]
                         assert applied["model"] == startup["model"], applied
                         assert applied["effort"] == startup["effort"], applied
-                        assert applied["ultracode"] is True, applied
-                        assert applied["ultracodeRequested"] is True, applied
+                        assert applied["ultracode"] is startup["ultracode"], applied
+                        assert applied["ultracodeRequested"] is startup["ultracode"], applied
                         assert applied["ultracodeAvailable"] is True, applied
                         return result
             if child.poll() is not None:
@@ -110,10 +112,15 @@ def dynamic_preferences():
                              stderr=slave, start_new_session=True, close_fds=True)
     os.close(slave)
     output = bytearray()
+    screen = pyte.Screen(120, 40)
+    stream = pyte.ByteStream(screen)
     ansi = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
 
     def text():
         return re.sub(r"\s+", "", ansi.sub("", output.decode(errors="replace")))
+
+    def current_text():
+        return re.sub(r"\s+", "", "\n".join(screen.display))
 
     def pump(seconds=0.05):
         if select.select([master], [], [], seconds)[0]:
@@ -124,6 +131,7 @@ def dynamic_preferences():
                     return
                 raise
             output.extend(block)
+            stream.feed(block)
             if b"\x1b[6n" in block:
                 os.write(master, b"\x1b[1;1R")
 
@@ -147,10 +155,43 @@ def dynamic_preferences():
         return previous
 
     try:
-        until(lambda: "ClaudeCode" in text() and SELECTION.exists())
+        until(lambda: "ClaudeCode" in current_text() and SELECTION.exists())
+        until(lambda: selected().get("permissionMode") == "auto" and
+              selected().get("ultracode") is True)
+        # Validate observed native mode after each switch; never infer by counting
+        # Shift+Tab input, since the available modes can differ between releases.
+        for expected_mode in ("default", "acceptEdits", "plan", "auto"):
+            os.write(master, b"\x1b[Z")
+            until(lambda: selected().get("permissionMode") == expected_mode)
+        command("/effort ultracode off")
+        until(lambda: selected().get("ultracode") is False)
+        command("/effort ultracode on")
+        until(lambda: selected().get("ultracode") is True)
+        previous = command("/effort")
+        until(lambda: "Tabtotoggle" in current_text() and "Ultracode" in current_text())
+        os.write(master, b"\t")
+        time.sleep(0.2)
+        assert selected()["ultracode"] is True, "Preview changed committed preference"
+        os.write(master, b"\x1b")
+        time.sleep(0.2)
+        assert selected()["ultracode"] is True, "Cancel changed committed preference"
+        previous = command("/effort")
+        until(lambda: "Tabtotoggle" in current_text() and "Ultracode" in current_text())
+        os.write(master, b"\t")
+        time.sleep(0.15)
+        os.write(master, b"\r")
+        until(lambda: selected().get("ultracode") is False)
+        for expected_mode in ("default", "acceptEdits"):
+            os.write(master, b"\x1b[Z")
+            until(lambda: selected().get("permissionMode") == expected_mode)
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 95, 0, 0))
+        screen.resize(lines=32, columns=95)
+        os.kill(child.pid, signal.SIGWINCH)
+        # The subsequent commands require usable input and a reconstructed
+        # current frame after resize; the final change is followed by fast exit.
         original_model = selected()["model"]
         previous = command("/model")
-        until(lambda: "Selectmodel" in text()[previous:])
+        until(lambda: "Selectmodel" in current_text())
         # Select the next visible native menu entry, then exercise a specific
         # older model via the same command's supported free-form argument.
         os.write(master, b"\x1b[B")
@@ -158,23 +199,23 @@ def dynamic_preferences():
         os.write(master, b"\r")
         until(lambda: selected()["model"] != original_model)
         previous = command("/model claude-opus-4-8")
-        until(lambda: "SetmodeltoOpus4.8" in text()[previous:])
+        until(lambda: "SetmodeltoOpus4.8" in current_text())
         until(lambda: selected().get("model") == "claude-opus-4-8")
         previous = command("/effort")
-        until(lambda: "TabtotoggleUltracode" in text()[previous:])
+        until(lambda: "Tabtotoggle" in current_text() and "Ultracode" in current_text())
         for _ in range(4):
             os.write(master, b"\x1b[D")
             time.sleep(0.05)
         os.write(master, b"\r")
-        until(lambda: "Seteffortleveltolow" in text()[previous:])
+        until(lambda: "Seteffortleveltolow" in current_text())
         until(lambda: selected().get("effort") == "low")
         previous = command("/effort")
-        until(lambda: "TabtotoggleUltracode" in text()[previous:])
+        until(lambda: "Tabtotoggle" in current_text() and "Ultracode" in current_text())
         for _ in range(4):
             os.write(master, b"\x1b[C")
             time.sleep(0.05)
         os.write(master, b"\r")
-        until(lambda: "Seteffortleveltomax" in text()[previous:])
+        until(lambda: "Seteffortleveltomax" in current_text())
         # Exit as soon as native UI confirms Max, without waiting for the
         # asynchronous status-line snapshot or adding a refresh grace period.
         command("/exit")
@@ -184,7 +225,8 @@ def dynamic_preferences():
         child.wait(timeout=2)
         assert child.returncode == 0
         result = selected()
-        assert result == {"model": "claude-opus-4-8", "effort": "max"}, result
+        assert result == {"model": "claude-opus-4-8", "effort": "max",
+                          "permissionMode": "acceptEdits", "ultracode": False}, result
         state = Path(os.environ["CLAUDE_CONFIG_DIR"])
         stored = json.loads((state / "settings.json").read_text())
         assert stored["modelSettings"]["claude-opus-4-8"]["effortLevel"] == "low"
@@ -225,6 +267,8 @@ def main():
     approved = app_state.get("customApiKeyResponses", {}).get("approved", [])
     trusted_project = app_state.get("projects", {}).get("/workspace", {})
     if preapproved:
+        assert app_state.get("hasResetAutoModeOptInForDefaultOffer") is True
+        assert app_state.get("hasSeenAutoDefaultNudge") is True
         assert trusted_project.get("hasTrustDialogAccepted") is True
         assert os.environ["ANTHROPIC_API_KEY"][-20:] in approved
         assert not (state / "preference-session-probe").exists()
@@ -268,6 +312,8 @@ def main():
                 compact = re.sub(r"\s+", "", text)
                 assert "UnabletoconnecttoAnthropicservices" not in compact
                 assert "Failedtoconnecttoapi.anthropic.com" not in compact
+                if "permissionMode" in startup:
+                    assert "Makeautomodeyourdefaultpermissionmode?" not in compact, "Saved mode prompted for a new default"
                 recent = compact[-12000:]
             if not trusted and "Yes,Itrustthisfolder" in recent:
                 assert not preapproved, "Approved workspace unexpectedly required confirmation"
@@ -325,20 +371,26 @@ def main():
             result["applied_preferences"] = sdk_preferences(startup)
             assert SELECTION.exists()
             initial = json.loads(SELECTION.read_text())
-            assert initial == {"model": startup["model"], "effort": startup["effort"]}, initial
+            assert initial == {key: startup[key] for key in
+                               ("model", "effort", "permissionMode", "ultracode")}, initial
             if "--exercise-selection" in sys.argv:
                 result["selection"] = dynamic_preferences()
                 checks.extend(["interactive-last-model-selection-exported",
                                "native-model-and-effort-menus-export-selection",
                                "interactive-low-to-session-only-max-exported",
-                               "interactive-fast-exit-retains-last-effort"])
+                               "interactive-fast-exit-retains-last-effort",
+                               "native-permission-mode-cycle-exported",
+                               "native-ultracode-direct-and-menu-exported",
+                               "native-ultracode-cancel-retains-committed-value",
+                               "native-resize-retains-last-preferences"])
             (state / "preference-session-probe").write_text("must-disappear")
             (state / "cache").mkdir(exist_ok=True)
             (state / "cache/preference-cache-probe").write_text("must-disappear")
             checks.extend(["approved-startup-needs-no-confirmation",
-                           "runtime-applies-auto-mode",
+                           "runtime-applies-requested-permission-mode",
+                           "restored-mode-is-not-replaced-by-auto-nudge",
                            "runtime-applies-max-effort",
-                           "runtime-applies-ultracode",
+                           "runtime-applies-requested-ultracode",
                            "preference-state-readonly-no-key-or-prompt",
                            "previous-preference-session-and-cache-not-present"])
         else:
@@ -351,10 +403,10 @@ def main():
         for file in SELECTION.parent.iterdir():
             assert file.name == "selection.json", file.name
             value = json.loads(file.read_text())
-            assert set(value) <= {"model", "effort"}, value
+            assert set(value) <= {"model", "effort", "permissionMode", "ultracode"}, value
             assert token.encode() not in file.read_bytes()
             assert os.environ["ANTHROPIC_API_KEY"].encode() not in file.read_bytes()
-        checks.append("preference-outbox-only-model-and-effort")
+        checks.append("preference-outbox-only-whitelisted-preferences")
         print(json.dumps(result))
     except Exception as error:
         # This probe handles only the synthetic fixture's prompt and fixed key.

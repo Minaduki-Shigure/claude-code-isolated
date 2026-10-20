@@ -57,5 +57,6 @@
   "statusLine": {
     "type": "command",
     "command": "python3 /opt/claude-isolation/export-preferences.py"
-  }
+  },
+  "autoMemoryDirectory": "/home/node/.claude/memory"
 }

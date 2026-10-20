@@ -39,14 +39,16 @@ IPv4/IPv6 targets on ports 80 and 443. Nothing here changes the host proxy.
 
 Optional host-only `config/startup.json` stores explicit startup preferences and
 scoped confirmations. The launcher uses it automatically when present; override
-its path with `STARTUP_CONFIG_FILE`. Without it, the empty
-`config/startup.example.json` preserves normal trust/key prompts.
+its path with `STARTUP_CONFIG_FILE`. Without it,
+`config/startup.example.json` leaves preference writeback off and preserves normal
+trust/key prompts.
 
 The strict schema accepts `schemaVersion: 1`, `trustedWorkspaces` (canonical
 absolute paths), `approvedCredentials` (objects containing `baseUrl`, `authMode`,
-and a full-key `keySha256`), plus optional `permissionMode` (`default` or `auto`),
-`model`, `effort` (`low`, `medium`, `high`, `xhigh`, or `max`), `ultracode` (boolean),
-and `rememberModelEffort` (boolean).
+and a full-key `keySha256`), plus optional `permissionMode` (`default`, `auto`,
+`acceptEdits`, `plan`, or `dontAsk`), `model`, `effort` (`low`, `medium`, `high`,
+`xhigh`, or `max`), `ultracode` (boolean), and the three boolean writeback switches
+below. `bypassPermissions` is not an accepted startup or saved preference.
 Only an exact workspace match skips workspace trust. API-key approval requires
 the same endpoint, auth mode and full key fingerprint; a different path, endpoint
 or key restores its corresponding prompt. Keep this file outside WORKSPACE and
@@ -63,17 +65,32 @@ accept. `ultracode: true` is independent of effort. This does not enable
 support, and effort/workflows depend on the selected model. The CLI's live
 settings and permission mode are tested, not merely the generated JSON.
 
-Set `rememberModelEffort: true` to remember the current interactive model and
-effort at exit, including `/effort max`. A fixed managed status-line command reads
-the CLI's structured live values and writes only these two validated fields to a
-disposable preference volume. The host launcher merges only them into the host
-startup file with a private atomic write; concurrent sessions save in exit order.
-The next session restores them. No transcript, session ID, history, debug log,
-cache, or complete app-state file is copied back. The temporary volume is removed
-with that launch's containers. User/plugin hooks and user status-line commands
-remain disabled; only the fixed managed exporter is permitted. Other interactive
-settings remain temporary. Editing the host startup file changes future defaults;
-setting `rememberModelEffort: false` disables automatic preference writeback.
+Three independent, opt-in switches remember the last interactive selections:
+
+| Switch | Saved fields |
+| --- | --- |
+| `rememberModelEffort` | `model` and `effort`, including `/effort max` |
+| `rememberPermissionMode` | `permissionMode`, including mode changes during the session |
+| `rememberUltracode` | `ultracode`, including the on/off selection in `/effort` |
+
+Model and effort come from the CLI's structured live status-line data. Permission
+mode and ultracode come from the native terminal's current rendered interface,
+parsed only in memory. The terminal stream and complete status-line payload are
+not saved. Only the four recognized, validated preference fields enter the disposable
+preference volume. On exit, the host launcher merges the fields enabled by these
+switches into the host startup file with a private atomic write; concurrent sessions
+save in exit order, and the next session restores them. An explicit saved mode
+also suppresses the repeated offer to replace it with auto; only the corresponding
+onboarding markers are reconstructed in temporary HOME. Setting one switch to
+`false` stops writeback for that category without changing the others.
+
+No transcript, session ID, history, debug log, cache, memory notes, or complete
+app-state file is copied back. The temporary volume is removed with that launch's
+containers. User/plugin hooks and user status-line commands remain disabled;
+only the fixed managed exporter is permitted. Other interactive settings remain
+temporary. Editing the host startup file changes future defaults. If the native
+interface cannot be identified reliably, the previous saved value is preserved.
+Daily image updates must pass the native interactive regression before release.
 
 The runtime defaults to `TZ=America/Los_Angeles`, using PST in winter and PDT in
 summer. Set an IANA zone with `TZ` in `.env` to override it.
@@ -115,7 +132,7 @@ do not globally prune Docker resources.
 | `/workspace/.claude` | tmpfs masks existing project Claude state/config |
 | `/config/settings.json` | Read-only persistent input copied into temporary HOME |
 | `/config/startup.json` | Read-only, derived approvals and startup preferences; no host paths or key hashes |
-| `/var/lib/claude-preferences` | Per-launch temporary volume containing only the validated model/effort snapshot |
+| `/var/lib/claude-preferences` | Per-launch temporary volume containing only validated model/effort/permission mode/ultracode preferences |
 | `/etc/claude-code/managed-settings.json` | Read-only policy, generated with fixed model endpoint |
 | `/etc/claude-code/managed-mcp.json` | Empty managed MCP inventory; MCP disabled |
 | `/run/secrets/model_api_key` | Read-only credential; not in image or Docker environment |
@@ -123,11 +140,12 @@ do not globally prune Docker resources.
 | `/run/claude-ipc` | Socket, readiness marker and public ephemeral CA only |
 
 Edit `config/settings.json` on the host for ordinary preferences and
-`config/startup.json` for the startup policy above. When `rememberModelEffort` is
-enabled, only model/effort changes are saved; other in-session changes are
-discarded. Do not sync `.claude` or `.claude.json` back to the host. Project `CLAUDE.md` outside `.claude/` remains
-visible. Project `.claude/` content is masked, and the CLI loads only user
-settings. Move required preferences into the explicit settings input.
+`config/startup.json` for the startup policy above. Each `remember*` switch saves
+only its listed preference fields; other in-session settings changes are
+discarded. Do not sync `.claude` or `.claude.json` back to the host. Existing
+project `CLAUDE.md` files outside `.claude/` remain readable and are not deleted.
+Project `.claude/` content is masked, and the CLI loads only user settings. Move
+required preferences into the explicit settings input.
 Docker may create an empty `.claude` mountpoint in a workspace that lacks one.
 
 The staged credential is inside a mode-0700 session directory with a readable
@@ -136,9 +154,15 @@ removes the staging directory on exit; the original credential file persists.
 Protect and back up the original credential as configuration. A forced crash
 may leave the private staging directory under `.run/`.
 
-All other defaults, including prompt history, transcripts, automatic memory,
-file checkpoints and caches, are disabled or confined to tmpfs. Docker's
-logging driver is `none`, and the gateway does not retain traffic bodies,
+Automatic memory is forcibly disabled with managed `autoMemoryEnabled: false`
+and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. Its directory is pinned to
+`/home/node/.claude/memory` on HOME tmpfs; user settings and `--settings` cannot
+redirect it into the workspace. Subagent memory is also disabled; its default
+locations under HOME and `/workspace/.claude` are covered by tmpfs. These controls
+do not delete ordinary workspace files such as existing `CLAUDE.md` instructions.
+
+Prompt history, transcripts, file checkpoints and caches are disabled or confined
+to tmpfs. Docker's logging driver is `none`, and the gateway does not retain traffic bodies,
 credentials or URL logs. Terminal scrollback is controlled by your terminal.
 Docker tmpfs can use swap; `memswap_limit=mem_limit` disables the container's
 Linux swap allowance, but this is not a forensic guarantee against VM/host
@@ -265,6 +289,8 @@ tested on the target machine; CI cannot establish that a user's proxy is usable.
 - [Claude network configuration](https://code.claude.com/docs/en/network-config)
 - [Claude environment variables](https://code.claude.com/docs/en/env-vars)
 - [Claude local storage](https://code.claude.com/docs/en/claude-directory)
+- [Claude automatic memory](https://code.claude.com/docs/en/memory#auto-memory)
+- [Subagent memory](https://code.claude.com/docs/en/sub-agents#enable-persistent-memory)
 - [Official release signature verification](https://code.claude.com/docs/en/setup#verify-the-manifest-signature)
 - [Official IP ranges](https://platform.claude.com/docs/en/api/ip-addresses)
 - [Docker none networking](https://docs.docker.com/engine/network/drivers/none/)

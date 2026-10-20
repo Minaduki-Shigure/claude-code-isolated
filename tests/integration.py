@@ -188,6 +188,95 @@ check("nested-connect-blocked", b" 403 " in tunnel("allowed.example.com",
 print(json.dumps({"checks": checks}))
 '''
 
+MEMORY_POLICY_PROBE = r'''
+import json, os, pathlib, selectors, subprocess, time
+state = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"])
+settings = json.loads((state / "settings.json").read_text())
+assert settings["autoMemoryEnabled"] is True
+assert settings["autoMemoryDirectory"] == "/workspace/auto-memory-redirect"
+assert os.environ["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+checks = []
+for label, overrides in (
+    ("user", None),
+    ("command-line", {
+        "autoMemoryEnabled": True,
+        "autoMemoryDirectory": "/workspace/auto-memory-cli-redirect",
+        "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"},
+    }),
+):
+    command = ["python3", "/opt/claude-isolation/launch-claude.py",
+               "-p", "--input-format", "stream-json",
+               "--output-format", "stream-json", "--verbose", "--tools", ""]
+    if overrides is not None:
+        command += ["--settings", json.dumps(overrides)]
+    child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+    selector = selectors.DefaultSelector()
+    selector.register(child.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(child.stderr, selectors.EVENT_READ, "stderr")
+    buffers = {"stdout": b"", "stderr": b""}
+    verified = False
+    def send(request_id, subtype):
+        # Control frames only: no user message or model request is needed.
+        child.stdin.write((json.dumps({
+            "type": "control_request", "request_id": request_id,
+            "request": {"subtype": subtype},
+        }) + "\n").encode())
+        child.stdin.flush()
+    send("initialize", "initialize")
+    try:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline and not verified:
+            for event, _ in selector.select(timeout=0.2):
+                block = os.read(event.fileobj.fileno(), 65536)
+                if not block:
+                    selector.unregister(event.fileobj)
+                    continue
+                buffers[event.data] += block
+                assert len(buffers[event.data]) <= 262144, "unexpected control output size"
+                if event.data != "stdout":
+                    continue
+                while b"\n" in buffers["stdout"]:
+                    line, buffers["stdout"] = buffers["stdout"].split(b"\n", 1)
+                    frame = json.loads(line)
+                    if frame.get("type") != "control_response":
+                        continue
+                    response = frame["response"]
+                    assert response["subtype"] == "success", "native settings request failed"
+                    if response["request_id"] == "initialize":
+                        send("settings", "get_settings")
+                    elif response["request_id"] == "settings":
+                        value = response["response"]
+                        assert not value.get("errors"), "native settings validation failed"
+                        effective = value["effective"]
+                        assert effective["autoMemoryEnabled"] is False
+                        assert effective["autoMemoryDirectory"] == "/home/node/.claude/memory"
+                        assert effective["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+                        verified = True
+            if child.poll() is not None and not verified:
+                break
+        assert verified, "native memory policy verification timed out: " + label
+        checks.extend([
+            label + "-cannot-enable-auto-memory",
+            label + "-cannot-redirect-auto-memory-to-workspace",
+            label + "-cannot-disable-memory-isolation-env",
+        ])
+    finally:
+        child.stdin.close()
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+        selector.close()
+for name in ("auto-memory-redirect", "auto-memory-cli-redirect"):
+    assert not (pathlib.Path("/workspace") / name).exists(), name
+checks.append("native-memory-policy-checks-create-no-workspace-memory")
+print(json.dumps({"checks": checks}))
+'''
+
 MODEL_PROBE = r'''
 import hashlib, json, os, pathlib, subprocess, uuid
 home = pathlib.Path.home()
@@ -222,8 +311,20 @@ for name in ("session-probe", ".claude/cache-probe", ".claude/projects/session-p
 pathlib.Path("/tmp/session-probe").write_text("must-disappear")
 pathlib.Path("/workspace/.claude/session-probe").write_text("must-disappear")
 pathlib.Path("/workspace/persist-probe").write_text("must-remain")
+for name in (
+    "/home/node/.claude/memory/MEMORY.md",
+    "/home/node/.claude/projects/-workspace/memory/MEMORY.md",
+    "/home/node/.claude/agent-memory/isolation-memory-probe/MEMORY.md",
+    "/workspace/.claude/agent-memory/isolation-memory-probe/MEMORY.md",
+    "/workspace/.claude/agent-memory-local/isolation-memory-probe/MEMORY.md",
+):
+    file = pathlib.Path(name)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("MEMORY_ISOLATION_MARKER_must_disappear")
+    assert file.read_text() == "MEMORY_ISOLATION_MARKER_must_disappear"
 print(json.dumps({"checks": ["real-claude-streaming-tool-and-final", "no-transcript-in-persistent-mounts",
-                            "print-mode-transcript-disabled"],
+                            "print-mode-transcript-disabled",
+                            "auto-and-subagent-memory-probes-written-to-ephemeral-paths"],
                   "session_id": result.get("session_id")}))
 '''
 
@@ -240,13 +341,26 @@ assert not list(state.rglob("*.jsonl"))
 assert not pathlib.Path("/tmp/session-probe").exists()
 assert not pathlib.Path("/workspace/.claude/session-probe").exists()
 assert pathlib.Path("/workspace/persist-probe").read_text() == "must-remain"
+for name in (
+    "/home/node/.claude/memory/MEMORY.md",
+    "/home/node/.claude/projects/-workspace/memory/MEMORY.md",
+    "/home/node/.claude/agent-memory/isolation-memory-probe/MEMORY.md",
+    "/workspace/.claude/agent-memory/isolation-memory-probe/MEMORY.md",
+    "/workspace/.claude/agent-memory-local/isolation-memory-probe/MEMORY.md",
+):
+    assert not pathlib.Path(name).exists(), name
+for name in ("auto-memory-redirect", "auto-memory-cli-redirect"):
+    assert not (pathlib.Path("/workspace") / name).exists(), name
 settings = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
 assert json.loads(settings.read_text())["env"]["ISOLATION_SETTINGS_SENTINEL"] == "persistent-config"
 print(json.dumps({"checks": ["home-state-not-persistent", "tmp-not-persistent",
                             "project-claude-state-not-persistent",
                             "workspace-persists", "configuration-persists",
                             "interactive-state-not-persistent", "no-jsonl-after-recreate",
-                            "preference-session-and-cache-not-persistent"]}))
+                            "preference-session-and-cache-not-persistent",
+                            "auto-memory-index-not-persistent",
+                            "subagent-user-project-local-memory-not-persistent",
+                            "redirected-auto-memory-never-created"]}))
 '''
 
 
@@ -338,7 +452,12 @@ def main():
         cert_dir.mkdir()
         certs(cert_dir)
         settings = tmp / "settings.json"
-        write_json(settings, {"env": {"ISOLATION_SETTINGS_SENTINEL": "persistent-config"}})
+        write_json(settings, {
+            "env": {"ISOLATION_SETTINGS_SENTINEL": "persistent-config"},
+            # Deliberately challenge the production managed policy.
+            "autoMemoryEnabled": True,
+            "autoMemoryDirectory": "/workspace/auto-memory-redirect",
+        })
         settings_hash = hashlib.sha256(settings.read_bytes()).hexdigest()
         startup_default = tmp / "startup-default.json"
         write_json(startup_default, {"trustWorkspace": False, "approveApiKey": False})
@@ -346,7 +465,8 @@ def main():
         write_json(startup_approved, {"trustWorkspace": True, "approveApiKey": True,
                                     "permissionMode": "auto", "effort": "max",
                                     "ultracode": True, "model": PREFERENCE_MODEL,
-                                    "rememberModelEffort": True})
+                                    "rememberModelEffort": True, "rememberPermissionMode": True,
+                                    "rememberUltracode": True})
         startup_hash = hashlib.sha256(startup_approved.read_bytes()).hexdigest()
         managed = json.loads((ROOT / "config/managed-settings.json").read_text())
         managed["allowedProviders"] = ["customEndpoint"]
@@ -490,6 +610,7 @@ else:
             checks.extend(["compose-net-none", "nonroot-readonly-dropped-capabilities",
                            "no-new-privileges", "docker-logging-disabled",
                            "only-workspace-writable-host-bind", "session-state-on-tmpfs"])
+            probe(MEMORY_POLICY_PROBE, "memory-policy")
             _, result = probe(MODEL_PROBE, "model")
             summary["mock_session_id"] = result.get("session_id")
             probe((ROOT / "tests/interactive_probe.py").read_text(), "interactive")
@@ -502,7 +623,8 @@ else:
                     (ROOT / "tests/interactive_probe.py").read_text(),
                                        "preferences")
                 selection = preferences["selection"]
-                assert selection == {"model": "claude-opus-4-8", "effort": "max"}
+                assert selection == {"model": "claude-opus-4-8", "effort": "max",
+                                     "permissionMode": "acceptEdits", "ultracode": False}
                 startup_restored = tmp / "startup-restored.json"
                 restored = json.loads(startup_approved.read_text())
                 restored.update(selection)
@@ -512,10 +634,13 @@ else:
                     (ROOT / "tests/interactive_probe.py").read_text(), "preferences-recreate")
                 assert recreated_preferences["applied_preferences"]["applied"]["model"] == selection["model"]
                 assert recreated_preferences["applied_preferences"]["applied"]["effort"] == selection["effort"]
+                assert recreated_preferences["applied_preferences"]["permissionMode"] == selection["permissionMode"]
+                assert recreated_preferences["applied_preferences"]["applied"]["ultracodeRequested"] == selection["ultracode"]
                 summary["applied_preferences"] = recreated_preferences["applied_preferences"]
                 summary["last_selection"] = selection
                 checks.extend(["persistent-preferences-reapplied-after-recreate",
-                               "last-interactive-model-and-max-restored"])
+                               "last-interactive-model-and-max-restored",
+                               "last-interactive-permission-mode-and-ultracode-off-restored"])
                 probe(RECREATE_PROBE, "preferences-state-recreate")
             finally:
                 env["STARTUP_STATE_FILE"] = str(startup_default)
@@ -529,8 +654,12 @@ else:
             assert hashlib.sha256(settings.read_bytes()).hexdigest() == settings_hash
             checks.append("persistent-settings-not-modified")
             assert not (workspace / ".claude/session-probe").exists()
+            for directory in ("auto-memory-redirect", "auto-memory-cli-redirect",
+                              ".claude/agent-memory", ".claude/agent-memory-local"):
+                assert not (workspace / directory).exists(), directory
             assert (workspace / ".claude/underlying-config.json").read_text() == '{"must":"remain-unmodified"}'
             checks.append("masked-project-state-not-written-to-host")
+            checks.append("no-auto-or-subagent-memory-written-to-host-workspace")
             events = [json.loads(line) for line in (audit_dir / "requests.jsonl").read_text().splitlines()]
             allowed_hosts = {"", "127.0.0.1", "cloudflare-dns.com", "model.example.com",
                              "allowed.example.com"}

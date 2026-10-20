@@ -44,7 +44,7 @@ cp .env.example .env
 
 可选的本机文件 `config/startup.json` 保存启动偏好和明确批准的 workspace/凭据；
 存在时启动器自动加载，也可用 `STARTUP_CONFIG_FILE` 指定其他路径。
-未配置时采用空的 `config/startup.example.json`，保留正常的信任及密钥确认。
+未配置时采用 `config/startup.example.json`，默认关闭偏好回写，并保留正常的信任及密钥确认。
 
 该配置只接受以下字段：
 
@@ -53,10 +53,12 @@ cp .env.example .env
 | `schemaVersion` | 固定为 `1` |
 | `trustedWorkspaces` | 已信任的 workspace 规范绝对路径列表；只精确匹配当前目录 |
 | `approvedCredentials` | `baseUrl`、`authMode`、`keySha256` 组成的批准记录；指纹为完整密钥去除首尾空白后的 SHA-256 |
-| `permissionMode` | 可选 `default` 或 `auto`；`auto` 同时记住启动确认，不启用绕过权限模式 |
+| `permissionMode` | 可选 `default`、`auto`、`acceptEdits`、`plan`、`dontAsk`；`auto` 同时记住启动确认，不接受或保存 `bypassPermissions` |
 | `model` | 可选的初始模型 ID，优先于 `.env` 中的 `ANTHROPIC_MODEL` |
 | `effort` | 可选 `low`、`medium`、`high`、`xhigh`、`max` |
-| `rememberModelEffort` | `true` 时在退出后保存交互会话的最后模型与 effort，下次自动恢复 |
+| `rememberModelEffort` | `true` 时在退出后保存交互会话的最后模型与 effort（含 Max），下次自动恢复 |
+| `rememberPermissionMode` | `true` 时保存会话内最后选择的权限模式，下次恢复 |
+| `rememberUltracode` | `true` 时保存会话内最后选择的 ultracode 开关，下次恢复 |
 | `ultracode` | 可选 `true` 或 `false`，与 effort 独立 |
 
 `auto`、Max、ultracode on 对应 `permissionMode: "auto"`、`effort: "max"`、`ultracode: true`。
@@ -69,14 +71,18 @@ cp .env.example .env
 更换 workspace 或凭据后，相应确认会重新出现；不会因密钥后缀相同而继承批准。
 
 容器内的全局状态文件仍位于 tmpfs，只在每次启动时填入有限的确认字段和偏好。
-启用 `rememberModelEffort` 后，固定的 managed statusLine 命令从 CLI 原生结构化数据中
-只提取当前 `model` 和 `effort`，包括菜单中最后选择的 Max，写入本次专用临时卷。
-退出时，主机启动器只合并这两个字段到本机配置，再删除该临时卷；下次自动恢复。
-并发会话按退出保存顺序更新。完整 statusLine 输入、会话 ID、聊天、历史、缓存和调试日志均不回写。
-用户、项目与插件 hooks，以及自定义 statusLine 命令仍不执行，只有固定的 managed 导出命令可运行。
+三个 `remember*` 开关彼此独立，只回写各自对应的白名单字段。`model` 和 `effort` 来自
+CLI 原生结构化 statusLine 数据；权限模式和 ultracode 则通过内存中的终端解析器读取
+原生终端当前界面，不保存终端输出流。本次专用临时卷最多包含这四项已识别、通过校验的偏好字段。
+退出时，主机启动器只将已启用记忆的类别合并到本机配置，再删除临时卷；
+下次自动恢复，并发会话按退出保存顺序更新。恢复已选模式时不会再次要求把 auto 设为默认；
+对应的少量确认标记只在临时 HOME 中重建。
 
+完整 statusLine 输入、会话 ID、聊天、历史、缓存、memory 笔记和调试日志均不回写。
+用户、项目与插件 hooks，以及自定义 statusLine 命令仍不执行，只有固定的 managed 导出命令可运行。
 其他界面设置变更仍是临时的。需要调整固定启动偏好，请编辑本机 `config/startup.json`；
-把 `rememberModelEffort` 改为 `false` 可关闭自动回写。
+把某个 `remember*` 开关改为 `false` 只关闭该类偏好的自动回写，不影响另外两类。
+若终端界面无法可靠识别，会保留原已保存值；每日自动更新的镜像必须通过原生交互回归后才发布。
 
 每次启动默认拉取经过 CI 验证的 `latest`，检查 Claude 与网关镜像属于同一次发布，
 并固定本次运行使用的镜像内容。需要固定版本时，将两个镜像配置为相同的
@@ -86,10 +92,14 @@ cp .env.example .env
 
 - `/workspace` 是唯一可写的主机业务目录。
 - 在主机编辑 `config/settings.json` 保存普通偏好；`config/startup.json` 保存上述启动偏好和批准。
-  启动偏好覆盖对应的普通设置；仅启用记忆时的 model/effort 会按上述白名单回写。
+  启动偏好覆盖对应的普通设置；三个独立 `remember*` 开关只回写各自启用的白名单偏好字段。
 - HOME、会话、历史、缓存、临时文件均位于 tmpfs；Docker 容器日志关闭。
+- 自动 memory 由 managed `autoMemoryEnabled: false` 与 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
+  强制禁用；目录固定为 HOME tmpfs 内的 `/home/node/.claude/memory`，普通设置和 `--settings`
+  不能将其重定向到 workspace。子 agent memory 也禁用；其位于 HOME 和 `/workspace/.claude`
+  下的默认存储位置由 tmpfs 覆盖。
 - `/workspace/.claude` 被 tmpfs 遮盖，现有项目 Claude 配置与状态不会加载或修改。
-  项目根目录的 `CLAUDE.md` 仍可读取。
+  项目根目录等 `.claude/` 外已有的 `CLAUDE.md` 仍可读取，不会删除；普通业务文件也保留。
 - 密钥以只读文件挂载；启动脚本创建的暂存副本在退出时删除。
 - 不挂载主机 HOME、Docker socket 或 SSH agent，不修改主机代理和其他容器。
 - 普通 HTTP 80、HTTPS 443 和 HTTPS Git 可用；SSH、WebSocket、HTTP/3、

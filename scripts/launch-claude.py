@@ -26,8 +26,27 @@ def main():
     # Native option parsing uses the last occurrence, so explicit caller flags
     # still take precedence over these initial preferences.
     command.extend(sys.argv[1:])
+    remember_ui = startup.get("rememberPermissionMode", False) or startup.get("rememberUltracode", False)
+    print_mode = any(arg in ("-p", "--print") or arg.startswith("--print=") for arg in sys.argv[1:])
+    if remember_ui and not print_mode and sys.stdin.isatty() and sys.stdout.isatty():
+        from preference_output import write_selection
+        from terminal_preferences import run_pty
+
+        def changed(values):
+            selected = {}
+            for name, flag in (("permissionMode", "rememberPermissionMode"),
+                               ("ultracode", "rememberUltracode")):
+                if startup.get(flag, False) and name in values:
+                    selected[name] = values[name]
+            if selected:
+                try:
+                    write_selection(selected)
+                except (OSError, ValueError, TypeError):
+                    pass
+
+        return run_pty(command, changed, env=environment)
     os.execve(command[0], command, environment)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

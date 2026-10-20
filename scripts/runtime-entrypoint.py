@@ -118,14 +118,22 @@ def main():
         if not isinstance(permissions, dict):
             raise RuntimeError("User permissions must be an object")
         permissions["defaultMode"] = startup["permissionMode"]
-        if startup["permissionMode"] == "auto":
-            settings["skipAutoPermissionPrompt"] = True
+        # An explicit saved mode is already a default-mode choice. Do not ask
+        # every disposable HOME to replace it with auto after the first reply.
+        settings["skipAutoPermissionPrompt"] = True
     if "ultracode" in startup:
         settings["ultracode"] = startup["ultracode"]
     (state / "settings.json").write_text(json.dumps(settings))
     # CLAUDE_CONFIG_DIR also relocates the global .claude.json app-state file.
     # Seed onboarding in that effective directory; it remains on HOME tmpfs.
     app_state = {"hasCompletedOnboarding": True}
+    if "permissionMode" in startup:
+        # Native 2.1.304 otherwise migrates away skipAutoPermissionPrompt for
+        # non-auto modes. Seed only this confirmation/migration marker in tmpfs.
+        app_state["hasResetAutoModeOptInForDefaultOffer"] = True
+        # Equivalent to keeping the explicitly saved mode in the auto-default
+        # offer. This is an onboarding marker, not a transcript or usage counter.
+        app_state["hasSeenAutoDefaultNudge"] = True
     if startup["trustWorkspace"]:
         app_state["projects"] = {"/workspace": {"hasTrustDialogAccepted": True}}
     policy = json.loads(POLICY.read_text())
@@ -189,7 +197,7 @@ def main():
     listener.listen(64)
     threading.Thread(target=serve, args=(listener,), daemon=True).start()
     child = subprocess.Popen(command, env=env)
-    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGWINCH):
         signal.signal(sig, lambda s, _f: child.send_signal(s) if child.poll() is None else None)
     try:
         code = child.wait()

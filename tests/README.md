@@ -89,8 +89,14 @@ sending any confirmation keys, report auto/Max/ultracode through the live CLI,
 receive a model response, and exit. The live preference regression switches model,
 then effort from low to max, verifies the managed exporter captured Max despite
 the ordinary settings file retaining Low, and restores those values in a fresh
-container. User hooks/status lines must not execute. Fresh containers must reapply
-the preferences without retaining transcripts, history or cache. The runtime zone
+container. It also cycles the native permission modes, toggles ultracode through
+its native effort command/menu, checks that canceled previews are not saved,
+resizes the terminal, and restores the final accept-edits mode and ultracode-off
+selection in a fresh container. User hooks/status lines must not execute. Fresh containers must reapply
+the preferences without retaining transcripts, history or cache. Automatic and
+subagent memory are disabled; user settings and CLI settings cannot enable or
+redirect automatic memory outside the fixed HOME tmpfs directory. Five explicit
+memory markers must disappear in the next container. The runtime zone
 is checked against fixed winter and summer dates to verify PST/PDT transitions. Host-side tests bind approvals
 to the exact workspace and endpoint/auth/full-key digest, including two different
 keys with the same suffix. The effective global state path is also checked:
@@ -144,8 +150,11 @@ The test uses two real host PTY launches with temporary configuration, an empty
 workspace, and a fake API key. It reads no deployment `.env` or real credential,
 never builds or pulls images, and sends only built-in slash commands, with no
 user task prompt. Claude Code may perform its own provider/model checks. It verifies that the native status line tracks model and effort
-changes, including session-only Max, and that the next launch restores them.
-Only model/effort may change in the host preferences, which must remain mode 0600;
+changes, including session-only Max. Native Shift+Tab permission changes and
+ultracode on/off are captured from the current terminal frame. The test checks
+menu cancellation, terminal resize and restoration of all four values on the next
+launch. Only model, effort, permissionMode and ultracode may change in the host
+preferences, which must remain mode 0600;
 workspace session files, each test project's Docker resources, and staged
 configuration must be absent after exit. Existing containers and proxy settings
 are untouched.

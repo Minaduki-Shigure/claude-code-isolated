@@ -116,12 +116,21 @@ class LauncherBoundaryTests(unittest.TestCase):
                         launcher.validate(config)
 
     def exercise_launch(self, fail_cleanup=False, remember=False, selection=None,
-                        collection_error=False):
+                        collection_error=False, remember_permission=False,
+                        remember_ultracode=False):
         calls, launched = [], []
         original_preferences = json.loads(self.startup.read_text())
-        if remember:
-            original_preferences.update(rememberModelEffort=True, model="previous-model",
-                                        effort="max", trustedWorkspaces=[str(self.workspace)])
+        remembering = remember or remember_permission or remember_ultracode
+        if remembering:
+            original_preferences.update(model="previous-model", effort="max",
+                                        permissionMode="auto", ultracode=True,
+                                        trustedWorkspaces=[str(self.workspace)])
+            if remember:
+                original_preferences["rememberModelEffort"] = True
+            if remember_permission:
+                original_preferences["rememberPermissionMode"] = True
+            if remember_ultracode:
+                original_preferences["rememberUltracode"] = True
             self.startup.write_text(json.dumps(original_preferences))
         labels = {
             "org.opencontainers.image.version": "2.1.304",
@@ -146,9 +155,16 @@ class LauncherBoundaryTests(unittest.TestCase):
             startup_path = Path(kwargs["env"]["STARTUP_STATE_FILE"])
             self.assertEqual(startup_path.parent, staged.parent)
             self.assertNotEqual(startup_path, self.startup)
-            expected = {"trustWorkspace": remember, "approveApiKey": False}
+            expected = {"trustWorkspace": remembering, "approveApiKey": False}
+            if remembering:
+                expected.update(model="previous-model", effort="max",
+                                permissionMode="auto", ultracode=True)
             if remember:
-                expected.update(rememberModelEffort=True, model="previous-model", effort="max")
+                expected["rememberModelEffort"] = True
+            if remember_permission:
+                expected["rememberPermissionMode"] = True
+            if remember_ultracode:
+                expected["rememberUltracode"] = True
             self.assertEqual(json.loads(startup_path.read_text()), expected)
             return mock.Mock(wait=mock.Mock(return_value=0), poll=mock.Mock(return_value=0))
 
@@ -169,17 +185,24 @@ class LauncherBoundaryTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Inspect only this project"):
                     launcher.main()
             elif collection_error:
-                with self.assertRaisesRegex(RuntimeError, "Could not save model/effort"):
+                with self.assertRaisesRegex(RuntimeError, "Could not save .*preferences"):
                     launcher.main()
             else:
                 self.assertEqual(launcher.main(), 0)
         expected = dict(original_preferences)
-        if remember:
+        if remembering:
             collect.assert_called_once()
             if selection is not None:
-                expected.update(selection)
-                if "effort" not in selection:
-                    expected.pop("effort", None)
+                if remember:
+                    expected["model"] = selection["model"]
+                    if "effort" in selection:
+                        expected["effort"] = selection["effort"]
+                    else:
+                        expected.pop("effort", None)
+                if remember_permission and "permissionMode" in selection:
+                    expected["permissionMode"] = selection["permissionMode"]
+                if remember_ultracode and "ultracode" in selection:
+                    expected["ultracode"] = selection["ultracode"]
         else:
             collect.assert_not_called()
         self.assertEqual(json.loads(self.startup.read_text()), expected)
@@ -222,6 +245,20 @@ class LauncherBoundaryTests(unittest.TestCase):
         preferences = json.loads(self.startup.read_text())
         self.assertEqual(preferences["model"], "previous-model")
         self.assertEqual(preferences["effort"], "max")
+        self.assertTrue(any("down" in args and "--volumes" in args for args in calls))
+        self.assertFalse(list((self.root / ".run").iterdir()))
+
+    def test_permission_and_ultracode_memory_work_without_model_memory(self):
+        selection = {"model": "another-model", "effort": "low",
+                     "permissionMode": "plan", "ultracode": False}
+        calls, _ = self.exercise_launch(remember_permission=True, remember_ultracode=True,
+                                       selection=selection)
+        preferences = json.loads(self.startup.read_text())
+        self.assertEqual(preferences["model"], "previous-model")
+        self.assertEqual(preferences["effort"], "max")
+        self.assertEqual(preferences["permissionMode"], "plan")
+        self.assertIs(preferences["ultracode"], False)
+        self.assertEqual(preferences["trustedWorkspaces"], [str(self.workspace)])
         self.assertTrue(any("down" in args and "--volumes" in args for args in calls))
         self.assertFalse(list((self.root / ".run").iterdir()))
 

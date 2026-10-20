@@ -5,6 +5,8 @@
 !scripts/
 !scripts/runtime-entrypoint.py
 !scripts/startup_config.py
+!scripts/preference_output.py
+!scripts/terminal_preferences.py
 !scripts/launch-claude.py
 !scripts/export-preferences.py
 !scripts/gateway-entrypoint.sh
