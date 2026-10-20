@@ -1,0 +1,52 @@
+{
+  "deny_domains": [
+    "anthropic.com",
+    "claude.ai",
+    "claude.com",
+    "claudeusercontent.com",
+    "claudemcpcontent.com",
+    "sentry.io",
+    "sentry-cdn.com",
+    "statsig.com",
+    "statsigapi.net",
+    "statsigcdn.com",
+    "datadoghq.com",
+    "datadoghq.eu",
+    "browser-intake-us5-datadoghq.com",
+    "browser-intake-datadoghq.com",
+    "browser-intake-us3-datadoghq.com",
+    "browser-intake-us1-datadoghq.com",
+    "browser-intake-ap1-datadoghq.com",
+    "browser-intake-datadoghq.eu",
+    "datad0g.com",
+    "segment.io",
+    "segment.com",
+    "segmentapis.com",
+    "amplitude.com",
+    "mixpanel.com",
+    "posthog.com",
+    "posthog.io",
+    "google-analytics.com",
+    "googletagmanager.com"
+  ],
+  "deny_cidrs": [
+    "160.79.104.0/21",
+    "2607:6bc0::/48"
+  ],
+  "deny_paths": [
+    {"host": "github.com", "prefix": "/anthropics"},
+    {"host": "api.github.com", "prefix": "/repos/anthropics"},
+    {"host": "api.github.com", "prefix": "/orgs/anthropics"},
+    {"host": "raw.githubusercontent.com", "prefix": "/anthropics"},
+    {"host": "codeload.github.com", "prefix": "/anthropics"},
+    {"host": "registry.npmjs.org", "prefix": "/@anthropic-ai"},
+    {"host": "registry.npmjs.org", "prefix": "/@anthropic"},
+    {"host": "storage.googleapis.com", "prefix": "/claude-code-dist-"},
+    {"host": "storage.googleapis.com", "prefix": "/anthropic-"}
+  ],
+  "doh": {
+    "host": "cloudflare-dns.com",
+    "path": "/dns-query",
+    "bootstrap_ips": ["1.1.1.1", "1.0.0.1"]
+  }
+}

@@ -1,0 +1,10 @@
+**
+!Dockerfile
+!gateway/
+!gateway/**
+!scripts/
+!scripts/runtime-entrypoint.py
+!scripts/gateway-entrypoint.sh
+!dist/
+!dist/claude
+!dist/build-inputs.json

@@ -1,0 +1,107 @@
+name: claude-code-isolated
+
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-ghcr.io/minaduki-shigure/claude-code-isolated-gateway:latest}
+    pull_policy: never
+    user: "0:0"
+    read_only: true
+    init: true
+    restart: "no"
+    cap_drop: [ALL]
+    # Used only by the entrypoint; all capabilities are dropped before Go starts.
+    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP, CHOWN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    memswap_limit: 512m
+    ulimits:
+      core: {soft: 0, hard: 0}
+    environment:
+      HOST_PROXY_HOST: ${HOST_PROXY_HOST:-host.docker.internal}
+      HOST_PROXY_PORT: ${HOST_PROXY_PORT:-6152}
+      IPC_DIR: /run/claude-ipc
+      POLICY_FILE: /etc/claude-isolation/policy.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ipc:/run/claude-ipc
+      - type: bind
+        source: ${GATEWAY_POLICY_FILE:-./gateway/policy.json}
+        target: /etc/claude-isolation/policy.json
+        read_only: true
+        bind: {create_host_path: false}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=16m,mode=0755
+    networks: [proxy]
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/claude-ipc/proxy.sock && test -f /run/claude-ipc/ready"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    logging: {driver: none}
+
+  claude:
+    image: ${CLAUDE_IMAGE:-ghcr.io/minaduki-shigure/claude-code-isolated:latest}
+    pull_policy: never
+    user: "1000:1000"
+    read_only: true
+    network_mode: none
+    init: true
+    restart: "no"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 4g
+    memswap_limit: 4g
+    ulimits:
+      core: {soft: 0, hard: 0}
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    environment:
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:?Set a non-Anthropic HTTPS model endpoint}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      MODEL_AUTH_MODE: ${MODEL_AUTH_MODE:-bearer}
+      TERM: ${TERM:-xterm-256color}
+    volumes:
+      - type: bind
+        source: ${WORKSPACE:?Set an absolute workspace directory}
+        target: /workspace
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${SETTINGS_FILE:-./config/settings.json}
+        target: /config/settings.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MANAGED_SETTINGS_FILE:-./config/managed-settings.json}
+        target: /etc/claude-code/managed-settings.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./config/managed-mcp.json
+        target: /etc/claude-code/managed-mcp.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MODEL_API_KEY_FILE:?Set an absolute API credential file}
+        target: /run/secrets/model_api_key
+        read_only: true
+        bind: {create_host_path: false}
+      - ipc:/run/claude-ipc:ro
+    tmpfs:
+      - /home/node:rw,nosuid,nodev,size=768m,uid=1000,gid=1000,mode=0700
+      - /tmp:rw,nosuid,nodev,size=768m,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=32m,uid=1000,gid=1000,mode=0755
+      - /workspace/.claude:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700
+    logging: {driver: none}
+
+networks:
+  proxy:
+    driver: bridge
+    enable_ipv6: false
+
+volumes:
+  ipc:

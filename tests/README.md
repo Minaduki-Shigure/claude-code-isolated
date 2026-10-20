@@ -1,0 +1,93 @@
+# Isolation verification
+
+Run the integration test against the exact candidate digests published by
+GitHub Actions:
+
+```sh
+python3 tests/integration.py \
+  --runtime-image ghcr.io/OWNER/claude-code-isolated@sha256:RUNTIME_DIGEST \
+  --gateway-image ghcr.io/OWNER/claude-code-isolated-gateway@sha256:GATEWAY_DIGEST \
+  --output verification.json
+```
+
+The command rejects tag-only image references. It pulls published images and
+never runs `docker build`, `docker compose build`, or Buildx. Requirements are
+Python 3, OpenSSL, a running Docker daemon, and Docker Compose v2 with `--wait`.
+The runtime image supplies Python and curl.
+
+The harness uses the production `compose.yaml` and a temporary override:
+
+- A unique Compose project owns every test container, network, and volume.
+- The proxy network is `internal: true`; no fixture request reaches the internet.
+- An offline upstream proxy reuses the published runtime image with a Python
+  entrypoint. It never opens outgoing sockets.
+- A temporary fixture CA is trusted only by the gateway. Its certificate covers
+  the fixture DNS and model names. The gateway still creates its normal,
+  independent interception CA.
+- DoH replies resolve fixture names to public IPv4/IPv6 addresses. The gateway
+  must validate these addresses and send numeric CONNECT targets to the upstream
+  fixture. No production domain/IP rule is weakened for tests.
+- The model key is a fixed fake string. The fixture records request type,
+  hostname, path, and stream/tool flags, but never credentials or prompt bodies.
+- Cleanup removes only resources created under this test's unique project and
+  container names. No existing proxy configuration or container is touched.
+
+## What is verified
+
+1. Runtime network mode is `none`, only loopback exists, direct IPv4/IPv6,
+   direct host proxy access, and direct UDP DNS fail. AF_VSOCK creation fails.
+2. The runtime and actual gateway worker run as UID 1000 with zero effective and
+   bounding capabilities and `NoNewPrivs=1`. Runtime rootfs is read-only and Docker
+   logging is disabled. The workspace is the sole writable host bind mount.
+3. A probe sharing the gateway network namespace can reach the configured
+   upstream proxy port but cannot reach a second, confirmed-live fixture port.
+   This verifies the gateway firewall using actual socket connections.
+4. Allowed HTTP and HTTPS requests succeed through the full relay, Unix socket,
+   filtering gateway, and upstream proxy chain.
+5. Official and known telemetry domains, domain suffixes, case/trailing-dot
+   variants, IP literals, private/metadata IPs, official CIDRs, forbidden CNAMEs,
+   mixed safe/private DNS answers, and unsafe AAAA answers are rejected.
+6. Redirects to an official endpoint, nonstandard CONNECT ports, missing or
+   mismatched TLS SNI, HTTPS Host mismatch, inner absolute-form mismatch, nested
+   CONNECT, and WebSocket upgrades are rejected.
+7. A host omitted from the fixture certificate gets a gateway error, proving
+   upstream certificate verification remains active.
+8. A real Claude Code process calls the fake Messages API using streaming SSE,
+   executes a permitted Bash tool that creates a workspace marker, returns the
+   tool result to the model, and receives the final answer.
+9. Print-mode session persistence is disabled. The prompt marker does not
+   appear in persistent mounts or a session/history JSONL. Explicit state markers
+   in HOME, `/tmp`, and the masked project `.claude` disappear in a newly created
+   container. The workspace marker and pure user settings remain; the underlying
+   project `.claude` file and host settings are unchanged.
+10. The fixture audit confirms numeric upstream CONNECT destinations and that
+    no official/telemetry HTTP request reached it. Stopping the fixture makes
+    subsequent requests fail closed.
+
+Go's `net/http` parser canonicalizes a plain HTTP absolute-form request's Host
+from its request-target before handing it to the gateway. For a conflicting raw
+Host header the test accepts either rejection or canonical forwarding to the
+allowed target; it separately audits the Host actually received upstream.
+Inside HTTPS, origin-form Host and TLS SNI must match the authorized CONNECT
+origin.
+
+## Evidence boundaries
+
+A passing report describes these exact image digests, the tested architecture,
+and the production policy present in the checkout. GitHub Actions runs it on
+native amd64 and arm64 runners before updating release tags. A fixture test does
+not validate the user's real API credential, real model gateway, host proxy
+availability, or all internet software.
+
+The real Claude test is non-interactive print mode. The same disposable mounts
+protect interactive sessions, but a successful print-mode result does not claim
+to have exercised the interactive UI. Arbitrary tools can deliberately write
+conversation content into the writable workspace; no general-purpose writable
+workspace can prevent that. Docker tmpfs is not proof of forensic zero traces on
+the host. A domain/IP blacklist cannot enumerate future unknown telemetry or a
+third party's server-side forwarding.
+
+The protocol fixture follows the official
+[Messages streaming event sequence](https://platform.claude.com/docs/en/build-with-claude/streaming).
+The CLI test uses the documented
+[`--no-session-persistence` print-mode flag](https://code.claude.com/docs/en/cli-reference).

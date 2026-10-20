@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+secrets/
+audit-local/
+.run/
+dist/
+__pycache__/
+*.pyc
+*.pem
+*.key
+*.crt
+*.log
+.DS_Store
