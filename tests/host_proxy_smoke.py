@@ -151,12 +151,15 @@ def main():
             os.chmod(key, 0o600)
             settings = temporary / "settings.json"
             settings.write_text("{}\n")
+            startup = temporary / "startup.json"
+            startup.write_text('{"schemaVersion":1,"trustedWorkspaces":[],"approvedCredentials":[]}\n')
             config = temporary / "smoke.env"
             values = {
                 "WORKSPACE": str(workspace),
                 "ANTHROPIC_BASE_URL": "https://example.com",
                 "MODEL_AUTH_MODE": "api-key", "MODEL_API_KEY_FILE": str(key),
-                "SETTINGS_FILE": str(settings),
+                "SETTINGS_FILE": str(settings), "STARTUP_CONFIG_FILE": str(startup),
+                "TZ": "America/Los_Angeles",
                 "HOST_PROXY_HOST": args.host_proxy_host,
                 "HOST_PROXY_PORT": str(args.host_proxy_port),
                 "CLAUDE_IMAGE": args.runtime_image, "GATEWAY_IMAGE": args.gateway_image,

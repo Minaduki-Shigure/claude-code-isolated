@@ -46,9 +46,9 @@ RUN test -n "$BUILD_DATE" \
     && apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl git jq less openssl python3 python3-venv ripgrep \
+        ca-certificates curl git jq less openssl python3 python3-venv ripgrep tzdata \
     && rm -rf /var/lib/apt/lists/* \
-    && install -d -o node -g node /workspace \
+    && install -d -o node -g node /workspace /var/lib/claude-preferences \
     && install -d -m 0755 /opt/claude-isolation /etc/claude-code
 # Repair only the two confirmed vulnerable npm dependencies, keeping the same
 # major versions. No install hooks or network access during patch application.
@@ -64,8 +64,11 @@ RUN --network=none mkdir -p /usr/local/share/claude-isolation \
 # executable. Never run an upstream install script or install into the user's HOME.
 COPY --chmod=0555 dist/claude /usr/local/bin/claude
 COPY --chmod=0555 scripts/runtime-entrypoint.py /opt/claude-isolation/runtime-entrypoint.py
+COPY --chmod=0444 scripts/startup_config.py /opt/claude-isolation/startup_config.py
+COPY --chmod=0555 scripts/launch-claude.py scripts/export-preferences.py /opt/claude-isolation/
 COPY dist/build-inputs.json /usr/local/share/claude-isolation/build-inputs.json
 ENV HOME=/home/node \
+    TZ=America/Los_Angeles \
     CLAUDE_CONFIG_DIR=/home/node/.claude \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_UPDATES=1 \

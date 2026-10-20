@@ -22,6 +22,7 @@ cp .env.example .env
 | `MODEL_API_KEY_FILE` | 仅保存一行密钥的文件，必须位于 workspace 外 |
 | `MODEL_AUTH_MODE` | `bearer` 或 `api-key`，按服务商鉴权方式选择 |
 | `HOST_PROXY_HOST` / `HOST_PROXY_PORT` | 默认 `host.docker.internal:6152` |
+| `TZ` | 默认 `America/Los_Angeles`，按季节自动切换 PST/PDT |
 
 配置文件按字面值解析，不执行 shell 表达式，也不展开 `$VARIABLE`。
 密钥不写入 `.env`、镜像或仓库；原始密钥文件建议设为 `0600`。
@@ -41,9 +42,41 @@ cp .env.example .env
 ./scripts/claude-docker.sh --pull never
 ```
 
-每个新的交互会话仍会询问是否信任 workspace；使用 API key 时也会询问是否采用该密钥。
-请根据实际项目来源确认。确认状态随临时容器丢弃；首次启动标记则在 tmpfs 内的
-`$CLAUDE_CONFIG_DIR/.claude.json` 中初始化。
+可选的本机文件 `config/startup.json` 保存启动偏好和明确批准的 workspace/凭据；
+存在时启动器自动加载，也可用 `STARTUP_CONFIG_FILE` 指定其他路径。
+未配置时采用空的 `config/startup.example.json`，保留正常的信任及密钥确认。
+
+该配置只接受以下字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `schemaVersion` | 固定为 `1` |
+| `trustedWorkspaces` | 已信任的 workspace 规范绝对路径列表；只精确匹配当前目录 |
+| `approvedCredentials` | `baseUrl`、`authMode`、`keySha256` 组成的批准记录；指纹为完整密钥去除首尾空白后的 SHA-256 |
+| `permissionMode` | 可选 `default` 或 `auto`；`auto` 同时记住启动确认，不启用绕过权限模式 |
+| `model` | 可选的初始模型 ID，优先于 `.env` 中的 `ANTHROPIC_MODEL` |
+| `effort` | 可选 `low`、`medium`、`high`、`xhigh`、`max` |
+| `rememberModelEffort` | `true` 时在退出后保存交互会话的最后模型与 effort，下次自动恢复 |
+| `ultracode` | 可选 `true` 或 `false`，与 effort 独立 |
+
+`auto`、Max、ultracode on 对应 `permissionMode: "auto"`、`effort: "max"`、`ultracode: true`。
+模型和 effort 通过初始 CLI 参数恢复，不固定环境变量，因此仍可用 `/model`、`/effort` 修改。
+这也能恢复 `Max`；Claude 的普通 `effortLevel` 设置不接受 Max。
+自动模式仍需要服务商支持权限分类请求；模型也必须支持对应 effort 与 workflows。
+
+该文件应为 `0600` 并放在 workspace 外；已排除在 Git 和镜像构建上下文之外。
+启动器只把匹配当前 workspace、API 地址、鉴权模式及完整密钥指纹的批准转换成临时状态。
+更换 workspace 或凭据后，相应确认会重新出现；不会因密钥后缀相同而继承批准。
+
+容器内的全局状态文件仍位于 tmpfs，只在每次启动时填入有限的确认字段和偏好。
+启用 `rememberModelEffort` 后，固定的 managed statusLine 命令从 CLI 原生结构化数据中
+只提取当前 `model` 和 `effort`，包括菜单中最后选择的 Max，写入本次专用临时卷。
+退出时，主机启动器只合并这两个字段到本机配置，再删除该临时卷；下次自动恢复。
+并发会话按退出保存顺序更新。完整 statusLine 输入、会话 ID、聊天、历史、缓存和调试日志均不回写。
+用户、项目与插件 hooks，以及自定义 statusLine 命令仍不执行，只有固定的 managed 导出命令可运行。
+
+其他界面设置变更仍是临时的。需要调整固定启动偏好，请编辑本机 `config/startup.json`；
+把 `rememberModelEffort` 改为 `false` 可关闭自动回写。
 
 每次启动默认拉取经过 CI 验证的 `latest`，检查 Claude 与网关镜像属于同一次发布，
 并固定本次运行使用的镜像内容。需要固定版本时，将两个镜像配置为相同的
@@ -52,7 +85,8 @@ cp .env.example .env
 ## 持久化与边界
 
 - `/workspace` 是唯一可写的主机业务目录。
-- 在主机编辑 `config/settings.json` 可持久保存偏好；容器内设置修改会丢弃。
+- 在主机编辑 `config/settings.json` 保存普通偏好；`config/startup.json` 保存上述启动偏好和批准。
+  启动偏好覆盖对应的普通设置；仅启用记忆时的 model/effort 会按上述白名单回写。
 - HOME、会话、历史、缓存、临时文件均位于 tmpfs；Docker 容器日志关闭。
 - `/workspace/.claude` 被 tmpfs 遮盖，现有项目 Claude 配置与状态不会加载或修改。
   项目根目录的 `CLAUDE.md` 仍可读取。

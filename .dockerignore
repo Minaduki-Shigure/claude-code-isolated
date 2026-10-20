@@ -4,6 +4,9 @@
 !gateway/**
 !scripts/
 !scripts/runtime-entrypoint.py
+!scripts/startup_config.py
+!scripts/launch-claude.py
+!scripts/export-preferences.py
 !scripts/gateway-entrypoint.sh
 !scripts/upstream.py
 !dist/

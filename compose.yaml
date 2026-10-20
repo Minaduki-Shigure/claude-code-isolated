@@ -65,6 +65,7 @@ services:
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
       MODEL_AUTH_MODE: ${MODEL_AUTH_MODE:-bearer}
       TERM: ${TERM:-xterm-256color}
+      TZ: ${TZ:-America/Los_Angeles}
     volumes:
       - type: bind
         source: ${WORKSPACE:?Set an absolute workspace directory}
@@ -73,6 +74,11 @@ services:
       - type: bind
         source: ${SETTINGS_FILE:-./config/settings.json}
         target: /config/settings.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${STARTUP_STATE_FILE:-./config/startup-state.default.json}
+        target: /config/startup.json
         read_only: true
         bind: {create_host_path: false}
       - type: bind
@@ -91,6 +97,7 @@ services:
         read_only: true
         bind: {create_host_path: false}
       - ipc:/run/claude-ipc:ro
+      - preferences:/var/lib/claude-preferences
     tmpfs:
       - /home/node:rw,nosuid,nodev,size=768m,uid=1000,gid=1000,mode=0700
       - /tmp:rw,nosuid,nodev,size=768m,mode=1777
@@ -105,3 +112,4 @@ networks:
 
 volumes:
   ipc:
+  preferences:

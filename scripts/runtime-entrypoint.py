@@ -11,12 +11,14 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
+from startup_config import validate_state
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 IPC = Path("/run/claude-ipc")
 HOME_DIR = Path("/home/node")
 POLICY = Path("/etc/claude-code/managed-settings.json")
 RESERVED_ENV = {
-    "HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "TMP", "TEMP", "CLAUDE_CODE_TMPDIR",
+    "TZ", "HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "TMP", "TEMP", "CLAUDE_CODE_TMPDIR",
     "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME",
     "HISTFILE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -84,6 +86,11 @@ def serve(listener):
 def main():
     if os.getuid() != 1000:
         raise RuntimeError("The runtime must run as uid 1000")
+    timezone = os.environ.get("TZ", "America/Los_Angeles")
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise RuntimeError("TZ must name an installed IANA timezone") from exc
     base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
     parsed = urlsplit(base_url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
@@ -105,10 +112,22 @@ def main():
     for name in settings.get("env", {}):
         if name.upper() in RESERVED_ENV or name.upper().startswith(("ANTHROPIC_", "OTEL_", "CLAUDE_CODE_", "DISABLE_", "ENABLE_")):
             raise RuntimeError(f"User settings cannot override isolation environment variable {name}")
+    startup = validate_state(json.loads(Path("/config/startup.json").read_text()))
+    if "permissionMode" in startup:
+        permissions = settings.setdefault("permissions", {})
+        if not isinstance(permissions, dict):
+            raise RuntimeError("User permissions must be an object")
+        permissions["defaultMode"] = startup["permissionMode"]
+        if startup["permissionMode"] == "auto":
+            settings["skipAutoPermissionPrompt"] = True
+    if "ultracode" in startup:
+        settings["ultracode"] = startup["ultracode"]
     (state / "settings.json").write_text(json.dumps(settings))
     # CLAUDE_CONFIG_DIR also relocates the global .claude.json app-state file.
     # Seed onboarding in that effective directory; it remains on HOME tmpfs.
-    (state / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
+    app_state = {"hasCompletedOnboarding": True}
+    if startup["trustWorkspace"]:
+        app_state["projects"] = {"/workspace": {"hasTrustDialogAccepted": True}}
     policy = json.loads(POLICY.read_text())
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -116,6 +135,7 @@ def main():
         "USER": "node",
         "LOGNAME": "node",
         "LANG": "C.UTF-8",
+        "TZ": timezone,
         "TERM": os.environ.get("TERM", "xterm-256color"),
         "TMPDIR": "/tmp",
         "CLAUDE_CODE_TMPDIR": "/tmp/claude",
@@ -146,6 +166,11 @@ def main():
     if auth not in ("bearer", "api-key"):
         raise RuntimeError("MODEL_AUTH_MODE must be bearer or api-key")
     env["ANTHROPIC_AUTH_TOKEN" if auth == "bearer" else "ANTHROPIC_API_KEY"] = key
+    if auth == "api-key" and startup["approveApiKey"]:
+        # Claude stores only its expected key suffix in ephemeral app state.
+        # Host approval is bound to the full key hash AND endpoint/auth mode.
+        app_state["customApiKeyResponses"] = {"approved": [key[-20:]], "rejected": []}
+    (state / ".claude.json").write_text(json.dumps(app_state))
     if os.environ.get("ANTHROPIC_MODEL"):
         env["ANTHROPIC_MODEL"] = os.environ["ANTHROPIC_MODEL"]
 
@@ -157,7 +182,7 @@ def main():
     elif args[:1] == ["--shell"]:
         command = ["bash", "--noprofile", "--norc"] + args[1:]
     else:
-        command = ["/usr/local/bin/claude", "--setting-sources", "user", "--no-chrome"] + args
+        command = ["python3", "/opt/claude-isolation/launch-claude.py"] + args
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 18080))

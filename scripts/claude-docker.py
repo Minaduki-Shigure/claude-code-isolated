@@ -13,26 +13,36 @@ import tempfile
 import time
 import uuid
 import importlib.util
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from startup_config import read_preferences, resolve_startup, save_selection, validate_selection
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
     "WORKSPACE", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "MODEL_AUTH_MODE",
     "MODEL_API_KEY_FILE", "HOST_PROXY_HOST", "HOST_PROXY_PORT",
     "CLAUDE_IMAGE", "GATEWAY_IMAGE", "SETTINGS_FILE", "GATEWAY_POLICY_FILE",
+    "STARTUP_CONFIG_FILE", "TZ",
 }
 DEFAULTS = {
     "HOST_PROXY_HOST": "host.docker.internal", "HOST_PROXY_PORT": "6152",
+    "TZ": "America/Los_Angeles",
     "MODEL_AUTH_MODE": "bearer", "ANTHROPIC_MODEL": "",
     "CLAUDE_IMAGE": "ghcr.io/minaduki-shigure/claude-code-isolated:latest",
     "GATEWAY_IMAGE": "ghcr.io/minaduki-shigure/claude-code-isolated-gateway:latest",
     "SETTINGS_FILE": str(ROOT / "config/settings.json"),
+    "STARTUP_CONFIG_FILE": str(ROOT / "config/startup.example.json"),
     "GATEWAY_POLICY_FILE": str(ROOT / "gateway/policy.json"),
 }
 
 
 def read_config(path):
     result = dict(DEFAULTS)
+    local_startup = ROOT / "config/startup.json"
+    if local_startup.is_file():
+        result["STARTUP_CONFIG_FILE"] = str(local_startup)
     for number, line in enumerate(path.read_text().splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
@@ -63,13 +73,17 @@ def validate(config):
     for key in ("WORKSPACE", "ANTHROPIC_BASE_URL", "MODEL_API_KEY_FILE"):
         if not config.get(key):
             raise ValueError(f"{key} is required")
+    try:
+        ZoneInfo(config["TZ"])
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("TZ must be an installed IANA timezone, such as America/Los_Angeles") from exc
     workspace = Path(config["WORKSPACE"]).expanduser().resolve(strict=True)
     if not workspace.is_dir() or workspace == Path("/") or workspace == Path.home():
         raise ValueError("WORKSPACE must be a project directory, never / or your home")
     if inside(ROOT, workspace):
         raise ValueError("WORKSPACE must not contain this deployment directory and its policies")
     config["WORKSPACE"] = str(workspace)
-    for key in ("MODEL_API_KEY_FILE", "SETTINGS_FILE", "GATEWAY_POLICY_FILE"):
+    for key in ("MODEL_API_KEY_FILE", "SETTINGS_FILE", "GATEWAY_POLICY_FILE", "STARTUP_CONFIG_FILE"):
         p = Path(config[key]).expanduser().resolve(strict=True)
         if not p.is_file():
             raise ValueError(f"{key} must be a regular file")
@@ -98,6 +112,7 @@ def validate(config):
         if name.upper() in runtime_policy.RESERVED_ENV or name.upper().startswith(("ANTHROPIC_", "OTEL_", "CLAUDE_CODE_", "DISABLE_", "ENABLE_")):
             raise ValueError(f"User settings cannot override isolation environment variable {name}")
     json.loads(Path(config["GATEWAY_POLICY_FILE"]).read_text())
+    read_preferences(config["STARTUP_CONFIG_FILE"])
     return config
 
 
@@ -108,6 +123,24 @@ def run(args, **kwargs):
 def image_record(reference):
     record = json.loads(run(["docker", "image", "inspect", reference], capture_output=True, text=True).stdout)[0]
     return record["Id"], record.get("Config", {}).get("Labels", {}) or {}
+
+
+def collect_selection(project, image):
+    # This helper has no network, credential, workspace or host configuration.
+    code = ("import sys,json; sys.path.insert(0,'/opt/claude-isolation'); "
+            "from startup_config import read_selection; "
+            "print(json.dumps(read_selection('/outbox/selection.json')))")
+    result = run(["docker", "run", "--rm", "--name", project + "-preferences",
+                  "--label", "com.docker.compose.project=" + project,
+                  "--label", "com.docker.compose.service=preferences-reader",
+                  "--network", "none", "--read-only", "--log-driver", "none", "--pull", "never",
+                  "--user", "1000:1000",
+                  "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                  "--mount", "type=volume,source=" + project + "_preferences,target=/outbox,readonly",
+                  "--entrypoint", "python3", image, "-c", code],
+                 capture_output=True, text=True, timeout=20)
+    value = json.loads(result.stdout)
+    return None if value is None else validate_selection(value)
 
 
 def main():
@@ -142,6 +175,8 @@ def main():
     compose = ["docker", "compose", "--project-name", project, "--env-file", "/dev/null", "-f", str(ROOT / "compose.yaml")]
     child = None
     started = False
+    cli_started = False
+    startup = {}
     env = dict(os.environ)
     env.update(config)
     try:
@@ -161,6 +196,15 @@ def main():
         os.chmod(credential, 0o644)
         env["MODEL_API_KEY_FILE"] = str(credential)
         env["MANAGED_SETTINGS_FILE"] = str(managed)
+        # Only scoped approvals and requested preferences enter the container.
+        # Host paths and credential fingerprints stay in the host-only config.
+        startup = resolve_startup(read_preferences(config["STARTUP_CONFIG_FILE"]),
+                                  config["WORKSPACE"], config["ANTHROPIC_BASE_URL"],
+                                  config["MODEL_AUTH_MODE"], value.decode())
+        startup_path = session / "startup-state.json"
+        startup_path.write_text(json.dumps(startup, indent=2) + "\n")
+        os.chmod(startup_path, 0o644)
+        env["STARTUP_STATE_FILE"] = str(startup_path)
         # Compose interpolates environment values once, not as shell code.
         run(compose + ["config", "--quiet"], env=env)
         (session / "project.txt").write_text(project + "\n")
@@ -185,6 +229,7 @@ def main():
         if not sys.stdin.isatty():
             cli_args += ["-T"]
         cli_args += ["claude"] + command
+        cli_started = True
         child = subprocess.Popen(cli_args, env=env)
         return child.wait()
     except KeyboardInterrupt:
@@ -199,6 +244,15 @@ def main():
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait()
+        preference_error = None
+        if cli_started and startup.get("rememberModelEffort", False):
+            try:
+                selection = collect_selection(project, config["CLAUDE_IMAGE"])
+                if selection is not None:
+                    save_selection(config["STARTUP_CONFIG_FILE"], selection)
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                # Preserve previous preferences; cleanup must still run.
+                preference_error = type(exc).__name__
         cleaned = True
         if started:
             # Stop the tracked Compose client before removing its resources.
@@ -223,6 +277,8 @@ def main():
         else:
             print(f"Cleanup incomplete for {project}; private recovery files retained at {session}", file=sys.stderr)
             raise RuntimeError("Inspect only this project before retrying; no other containers were touched")
+        if preference_error:
+            raise RuntimeError("Could not save model/effort preferences (" + preference_error + "); previous preferences were preserved")
 
 
 if __name__ == "__main__":

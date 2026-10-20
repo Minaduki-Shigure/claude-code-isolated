@@ -1,8 +1,10 @@
 {
-  "allowedProviders": ["customEndpoint"],
+  "allowedProviders": [
+    "customEndpoint"
+  ],
   "disableRemoteControl": true,
   "disableClaudeAiConnectors": true,
-  "disableAllHooks": true,
+  "disableAllHooks": false,
   "skipWebFetchPreflight": true,
   "autoMemoryEnabled": false,
   "autoConnectIde": false,
@@ -49,5 +51,11 @@
     "OTEL_METRICS_EXPORTER": "none",
     "OTEL_LOGS_EXPORTER": "none",
     "OTEL_TRACES_EXPORTER": "none"
+  },
+  "allowManagedHooksOnly": true,
+  "hooks": {},
+  "statusLine": {
+    "type": "command",
+    "command": "python3 /opt/claude-isolation/export-preferences.py"
   }
 }

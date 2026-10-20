@@ -143,7 +143,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         payload = json.loads(self.rfile.read(length) or b"{}")
         audit("request", method="POST", host=host, path=parsed.path,
-              streaming=bool(payload.get("stream")))
+              streaming=bool(payload.get("stream")), model=payload.get("model"),
+              effort=payload.get("output_config", {}).get("effort"))
         if parsed.path == "/v1/messages/count_tokens":
             self.json_response({"input_tokens": 64})
             return

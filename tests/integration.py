@@ -18,14 +18,20 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST_IMAGE = re.compile(r"^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$")
 MODEL = "claude-sonnet-4-5-20250929"
+PREFERENCE_MODEL = "claude-opus-5-5"
 
 NETWORK_PROBE = r'''
-import fcntl, json, os, pathlib, socket, ssl, struct, subprocess
+import calendar, fcntl, json, os, pathlib, socket, ssl, struct, subprocess, time
 checks = []
 def check(name, value, detail=""):
     if not value:
         raise AssertionError(name + (": " + detail[:300] if detail else ""))
     checks.append(name)
+time.tzset()
+check("timezone-pacific-winter", time.strftime("%Z %z", time.localtime(
+    calendar.timegm((2026, 1, 15, 12, 0, 0)))) == "PST -0800")
+check("timezone-pacific-summer", time.strftime("%Z %z", time.localtime(
+    calendar.timegm((2026, 7, 15, 12, 0, 0)))) == "PDT -0700")
 # Some LinuxKit kernels expose DOWN fallback tunnel devices even with Docker
 # network_mode=none. Inspect actual interfaces/flags and routing, not filenames.
 interfaces = dict((name, index) for index, name in socket.if_nameindex())
@@ -188,9 +194,9 @@ home = pathlib.Path.home()
 settings = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
 assert json.loads(settings.read_text())["env"]["ISOLATION_SETTINGS_SENTINEL"] == "persistent-config"
 token = "PRIVATE_SESSION_MARKER_" + uuid.uuid4().hex
-command = ["claude", "--setting-sources", "user", "--no-chrome",
+command = ["python3", "/opt/claude-isolation/launch-claude.py",
            "-p", "--no-session-persistence", "--output-format", "json",
-           "--model", os.environ["ANTHROPIC_MODEL"], "--tools", "Bash",
+           "--tools", "Bash",
            "--allowedTools", "Bash", "--max-turns", "3",
            "Offline integration test " + token]
 p = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -228,6 +234,8 @@ for name in ("session-probe", ".claude/cache-probe", ".claude/projects/session-p
     assert not (home / name).exists(), name
 state = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"])
 assert not (state / "interactive-session-probe").exists()
+assert not (state / "preference-session-probe").exists()
+assert not (state / "cache/preference-cache-probe").exists()
 assert not list(state.rglob("*.jsonl"))
 assert not pathlib.Path("/tmp/session-probe").exists()
 assert not pathlib.Path("/workspace/.claude/session-probe").exists()
@@ -237,7 +245,8 @@ assert json.loads(settings.read_text())["env"]["ISOLATION_SETTINGS_SENTINEL"] ==
 print(json.dumps({"checks": ["home-state-not-persistent", "tmp-not-persistent",
                             "project-claude-state-not-persistent",
                             "workspace-persists", "configuration-persists",
-                            "interactive-state-not-persistent", "no-jsonl-after-recreate"]}))
+                            "interactive-state-not-persistent", "no-jsonl-after-recreate",
+                            "preference-session-and-cache-not-persistent"]}))
 '''
 
 
@@ -331,6 +340,14 @@ def main():
         settings = tmp / "settings.json"
         write_json(settings, {"env": {"ISOLATION_SETTINGS_SENTINEL": "persistent-config"}})
         settings_hash = hashlib.sha256(settings.read_bytes()).hexdigest()
+        startup_default = tmp / "startup-default.json"
+        write_json(startup_default, {"trustWorkspace": False, "approveApiKey": False})
+        startup_approved = tmp / "startup-approved.json"
+        write_json(startup_approved, {"trustWorkspace": True, "approveApiKey": True,
+                                    "permissionMode": "auto", "effort": "max",
+                                    "ultracode": True, "model": PREFERENCE_MODEL,
+                                    "rememberModelEffort": True})
+        startup_hash = hashlib.sha256(startup_approved.read_bytes()).hexdigest()
         managed = json.loads((ROOT / "config/managed-settings.json").read_text())
         managed["allowedProviders"] = ["customEndpoint"]
         managed.setdefault("env", {})["ANTHROPIC_BASE_URL"] = "https://model.example.com"
@@ -369,8 +386,11 @@ def main():
         })
         env = dict(os.environ)
         env.update({
+            "COMPOSE_DISABLE_ENV_FILE": "1",
+            "TZ": "America/Los_Angeles",
             "CLAUDE_IMAGE": args.runtime_image, "GATEWAY_IMAGE": args.gateway_image,
             "WORKSPACE": str(workspace), "SETTINGS_FILE": str(settings),
+            "STARTUP_STATE_FILE": str(startup_default),
             "MANAGED_SETTINGS_FILE": str(managed_path), "MODEL_API_KEY_FILE": str(key),
             "ANTHROPIC_BASE_URL": "https://model.example.com", "ANTHROPIC_MODEL": MODEL,
             "MODEL_AUTH_MODE": "api-key", "HOST_PROXY_HOST": "127.0.0.1",
@@ -460,6 +480,7 @@ else:
             mounts = {item["Destination"]: item for item in info["Mounts"]}
             assert mounts["/workspace"]["RW"]
             assert not mounts["/run/claude-ipc"]["RW"]
+            assert mounts["/var/lib/claude-preferences"]["Type"] == "volume"
             assert not any("docker.sock" in item.get("Source", "") for item in info["Mounts"])
             writable_bind_mounts = [item["Destination"] for item in info["Mounts"]
                                     if item["Type"] == "bind" and item["RW"]]
@@ -468,11 +489,43 @@ else:
                 assert directory in host["Tmpfs"], (directory, host["Tmpfs"])
             checks.extend(["compose-net-none", "nonroot-readonly-dropped-capabilities",
                            "no-new-privileges", "docker-logging-disabled",
-                           "only-workspace-writable-host-bind", "all-state-on-tmpfs"])
+                           "only-workspace-writable-host-bind", "session-state-on-tmpfs"])
             _, result = probe(MODEL_PROBE, "model")
             summary["mock_session_id"] = result.get("session_id")
             probe((ROOT / "tests/interactive_probe.py").read_text(), "interactive")
             probe(RECREATE_PROBE, "recreate")
+            env["STARTUP_STATE_FILE"] = str(startup_approved)
+            env["ANTHROPIC_MODEL"] = PREFERENCE_MODEL
+            try:
+                _, preferences = probe(
+                    "import sys\nsys.argv.append('--exercise-selection')\n" +
+                    (ROOT / "tests/interactive_probe.py").read_text(),
+                                       "preferences")
+                selection = preferences["selection"]
+                assert selection == {"model": "claude-opus-4-8", "effort": "max"}
+                startup_restored = tmp / "startup-restored.json"
+                restored = json.loads(startup_approved.read_text())
+                restored.update(selection)
+                write_json(startup_restored, restored)
+                env["STARTUP_STATE_FILE"] = str(startup_restored)
+                _, recreated_preferences = probe(
+                    (ROOT / "tests/interactive_probe.py").read_text(), "preferences-recreate")
+                assert recreated_preferences["applied_preferences"]["applied"]["model"] == selection["model"]
+                assert recreated_preferences["applied_preferences"]["applied"]["effort"] == selection["effort"]
+                summary["applied_preferences"] = recreated_preferences["applied_preferences"]
+                summary["last_selection"] = selection
+                checks.extend(["persistent-preferences-reapplied-after-recreate",
+                               "last-interactive-model-and-max-restored"])
+                probe(RECREATE_PROBE, "preferences-state-recreate")
+            finally:
+                env["STARTUP_STATE_FILE"] = str(startup_default)
+                env["ANTHROPIC_MODEL"] = MODEL
+            assert hashlib.sha256(startup_approved.read_bytes()).hexdigest() == startup_hash
+            for preference_file in (startup_default, startup_approved, startup_restored):
+                data = preference_file.read_bytes()
+                assert key.read_bytes() not in data
+                assert b"SESSION_MARKER_" not in data
+            checks.append("persistent-startup-json-unchanged-no-secret-or-prompt")
             assert hashlib.sha256(settings.read_bytes()).hexdigest() == settings_hash
             checks.append("persistent-settings-not-modified")
             assert not (workspace / ".claude/session-probe").exists()
@@ -496,9 +549,15 @@ else:
             assert any(event["kind"] == "model_turn" and event["has_tool_result"] for event in events)
             assert any(event["kind"] == "request" and event.get("streaming")
                        and event["host"] == "model.example.com" for event in events)
+            assert any(event["kind"] == "request" and event.get("model") == PREFERENCE_MODEL
+                       and event.get("effort") == "max" for event in events)
+            assert any(event["kind"] == "request" and event.get("model") == "claude-opus-4-8"
+                       and event.get("effort") == "max" for event in events)
             checks.extend(["numeric-upstream-destination-pinning",
                            "no-official-or-telemetry-request-reaches-upstream",
-                           "real-cli-tool-result-returned-to-model"])
+                           "real-cli-tool-result-returned-to-model",
+                           "max-effort-reaches-model-api",
+                           "restored-model-and-effort-reach-model-api"])
             dc("stop", "fixture", timeout=30)
             probe(r'''
 import json, subprocess
@@ -512,6 +571,10 @@ print(json.dumps({"checks":["upstream-outage-fails-closed"]}))
             for name in created_containers:
                 command(["docker", "rm", "-f", name], timeout=20, check=False)
             dc("down", "--volumes", "--remove-orphans", timeout=45, check=False)
+            preferences_volume = command(["docker", "volume", "inspect", project + "_preferences"],
+                                         timeout=15, check=False)
+            assert preferences_volume.returncode != 0, "Temporary preference volume survived cleanup"
+            checks.append("preference-outbox-volume-removed-with-project")
             if args.output:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 write_json(args.output, summary)

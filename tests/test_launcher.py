@@ -7,11 +7,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 REPOSITORY = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY / "scripts"))
 SPEC = importlib.util.spec_from_file_location(
     "launcher", REPOSITORY / "scripts/claude-docker.py"
 )
@@ -32,6 +34,10 @@ class LauncherBoundaryTests(unittest.TestCase):
             self.root / "scripts/runtime-entrypoint.py",
         )
         shutil.copyfile(
+            REPOSITORY / "scripts/startup_config.py",
+            self.root / "scripts/startup_config.py",
+        )
+        shutil.copyfile(
             REPOSITORY / "config/managed-settings.json",
             self.root / "config/managed-settings.json",
         )
@@ -41,13 +47,17 @@ class LauncherBoundaryTests(unittest.TestCase):
         self.settings.write_text("{}")
         self.policy = self.root / "policy.json"
         self.policy.write_text("{}")
+        self.startup = self.root / "startup.json"
+        self.startup.write_text(json.dumps({"schemaVersion": 1, "trustedWorkspaces": [],
+                                           "approvedCredentials": []}))
         self.key = self.root / "api-key"
         self.key.write_text("dummy-test-key")
         self.config = dict(launcher.DEFAULTS, WORKSPACE=str(self.workspace),
                            ANTHROPIC_BASE_URL="https://model.example.com",
                            MODEL_API_KEY_FILE=str(self.key),
                            SETTINGS_FILE=str(self.settings),
-                           GATEWAY_POLICY_FILE=str(self.policy))
+                           GATEWAY_POLICY_FILE=str(self.policy),
+                           STARTUP_CONFIG_FILE=str(self.startup))
         self.root_patch = mock.patch.object(launcher, "ROOT", self.root)
         self.root_patch.start()
         self.addCleanup(self.root_patch.stop)
@@ -56,6 +66,7 @@ class LauncherBoundaryTests(unittest.TestCase):
         for name, value in (
             ("HOME", "/workspace"), ("CLAUDE_CONFIG_DIR", "/workspace/sessions"),
             ("XDG_STATE_HOME", "/workspace/state"), ("http_proxy", "http://elsewhere:80"),
+            ("TZ", "Asia/Tokyo"),
             ("NODE_TLS_REJECT_UNAUTHORIZED", "0"), ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://elsewhere"),
         ):
             with self.subTest(name=name):
@@ -74,20 +85,44 @@ class LauncherBoundaryTests(unittest.TestCase):
                 self.assertEqual(config["ANTHROPIC_MODEL"], payload)
                 self.assertFalse(marker.exists())
 
+    def test_timezone_defaults_to_los_angeles_and_can_be_configured(self):
+        env_file = self.root / ".env"
+        env_file.write_text("")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(launcher.read_config(env_file)["TZ"], "America/Los_Angeles")
+        env_file.write_text("TZ=UTC\n")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(launcher.read_config(env_file)["TZ"], "UTC")
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}, clear=True):
+            self.assertEqual(launcher.read_config(env_file)["TZ"], "Asia/Tokyo")
+
+    def test_invalid_timezone_is_rejected_before_containers_start(self):
+        for timezone in ("", "Mars/Olympus", "../etc/passwd", "/etc/passwd"):
+            with self.subTest(timezone=timezone):
+                with self.assertRaises(ValueError):
+                    launcher.validate(dict(self.config, TZ=timezone))
+
     def test_sensitive_paths_inside_workspace_are_rejected_including_symlinks(self):
         inside = self.workspace / "private.json"
         inside.write_text("{}")
         link = self.root / "looks-outside.json"
         link.symlink_to(inside)
-        for key in ("MODEL_API_KEY_FILE", "SETTINGS_FILE", "GATEWAY_POLICY_FILE"):
+        for key in ("MODEL_API_KEY_FILE", "SETTINGS_FILE", "GATEWAY_POLICY_FILE",
+                    "STARTUP_CONFIG_FILE"):
             for path in (inside, link):
                 with self.subTest(key=key, path=path):
                     config = dict(self.config, **{key: str(path)})
                     with self.assertRaisesRegex(ValueError, "outside WORKSPACE"):
                         launcher.validate(config)
 
-    def exercise_launch(self, fail_cleanup=False):
+    def exercise_launch(self, fail_cleanup=False, remember=False, selection=None,
+                        collection_error=False):
         calls, launched = [], []
+        original_preferences = json.loads(self.startup.read_text())
+        if remember:
+            original_preferences.update(rememberModelEffort=True, model="previous-model",
+                                        effort="max", trustedWorkspaces=[str(self.workspace)])
+            self.startup.write_text(json.dumps(original_preferences))
         labels = {
             "org.opencontainers.image.version": "2.1.304",
             "org.opencontainers.image.revision": "a" * 40,
@@ -108,6 +143,13 @@ class LauncherBoundaryTests(unittest.TestCase):
             self.assertEqual(staged.parent.stat().st_mode & 0o777, 0o700)
             self.assertEqual(staged.parent.parent.stat().st_mode & 0o777, 0o700)
             self.assertEqual(staged.read_text(), "dummy-test-key")
+            startup_path = Path(kwargs["env"]["STARTUP_STATE_FILE"])
+            self.assertEqual(startup_path.parent, staged.parent)
+            self.assertNotEqual(startup_path, self.startup)
+            expected = {"trustWorkspace": remember, "approveApiKey": False}
+            if remember:
+                expected.update(rememberModelEffort=True, model="previous-model", effort="max")
+            self.assertEqual(json.loads(startup_path.read_text()), expected)
             return mock.Mock(wait=mock.Mock(return_value=0), poll=mock.Mock(return_value=0))
 
         with (
@@ -116,6 +158,9 @@ class LauncherBoundaryTests(unittest.TestCase):
             mock.patch.object(launcher.subprocess, "run", side_effect=fake_run),
             mock.patch.object(launcher.subprocess, "Popen", side_effect=fake_process),
             mock.patch.object(launcher.signal, "signal"),
+            mock.patch.object(launcher, "collect_selection", return_value=selection,
+                              side_effect=ValueError("invalid exported selection")
+                              if collection_error else None) as collect,
             mock.patch.object(launcher.sys, "argv", ["claude-docker.py", "--pull", "never"]),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
@@ -123,8 +168,21 @@ class LauncherBoundaryTests(unittest.TestCase):
             if fail_cleanup:
                 with self.assertRaisesRegex(RuntimeError, "Inspect only this project"):
                     launcher.main()
+            elif collection_error:
+                with self.assertRaisesRegex(RuntimeError, "Could not save model/effort"):
+                    launcher.main()
             else:
                 self.assertEqual(launcher.main(), 0)
+        expected = dict(original_preferences)
+        if remember:
+            collect.assert_called_once()
+            if selection is not None:
+                expected.update(selection)
+                if "effort" not in selection:
+                    expected.pop("effort", None)
+        else:
+            collect.assert_not_called()
+        self.assertEqual(json.loads(self.startup.read_text()), expected)
         return calls, launched
 
     def test_cleanup_uses_unique_project_and_exact_name_and_label(self):
@@ -145,6 +203,27 @@ class LauncherBoundaryTests(unittest.TestCase):
             self.assertTrue(all(args[args.index("--project-name") + 1] == project for args in launched))
             self.assertFalse(list((self.root / ".run").iterdir()))
         self.assertNotEqual(*projects)
+
+    def test_remembered_selection_is_saved_and_temporary_resources_are_removed(self):
+        selection = {"model": "chosen-model", "effort": "low"}
+        calls, _ = self.exercise_launch(remember=True, selection=selection)
+        preferences = json.loads(self.startup.read_text())
+        self.assertEqual(preferences["model"], selection["model"])
+        self.assertEqual(preferences["effort"], selection["effort"])
+        self.assertEqual(preferences["trustedWorkspaces"], [str(self.workspace)])
+        self.assertEqual(preferences["approvedCredentials"], [])
+        self.assertEqual(self.startup.stat().st_mode & 0o777, 0o600)
+        down = next(args for args in calls if "down" in args)
+        self.assertIn("--volumes", down)
+        self.assertFalse(list((self.root / ".run").iterdir()))
+
+    def test_rejected_selection_preserves_preferences_and_still_cleans_resources(self):
+        calls, _ = self.exercise_launch(remember=True, collection_error=True)
+        preferences = json.loads(self.startup.read_text())
+        self.assertEqual(preferences["model"], "previous-model")
+        self.assertEqual(preferences["effort"], "max")
+        self.assertTrue(any("down" in args and "--volumes" in args for args in calls))
+        self.assertFalse(list((self.root / ".run").iterdir()))
 
     def test_failed_cleanup_keeps_private_recovery_metadata(self):
         self.exercise_launch(fail_cleanup=True)

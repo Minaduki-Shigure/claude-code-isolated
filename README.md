@@ -37,10 +37,46 @@ IPv4/IPv6 targets on ports 80 and 443. Nothing here changes the host proxy.
 ./scripts/claude-docker.sh
 ```
 
-Each fresh interactive session still asks you to trust the workspace and, for
-API-key authentication, confirm the configured key. These confirmations remain
-interactive; their state is not persisted. The initial onboarding marker is
-seeded at `$CLAUDE_CONFIG_DIR/.claude.json` inside tmpfs.
+Optional host-only `config/startup.json` stores explicit startup preferences and
+scoped confirmations. The launcher uses it automatically when present; override
+its path with `STARTUP_CONFIG_FILE`. Without it, the empty
+`config/startup.example.json` preserves normal trust/key prompts.
+
+The strict schema accepts `schemaVersion: 1`, `trustedWorkspaces` (canonical
+absolute paths), `approvedCredentials` (objects containing `baseUrl`, `authMode`,
+and a full-key `keySha256`), plus optional `permissionMode` (`default` or `auto`),
+`model`, `effort` (`low`, `medium`, `high`, `xhigh`, or `max`), `ultracode` (boolean),
+and `rememberModelEffort` (boolean).
+Only an exact workspace match skips workspace trust. API-key approval requires
+the same endpoint, auth mode and full key fingerprint; a different path, endpoint
+or key restores its corresponding prompt. Keep this file outside WORKSPACE and
+chmod it to 0600. It is ignored by Git and excluded from image build contexts.
+
+The host launcher stages only matching boolean approvals and preferences as a
+read-only file. The runtime seeds a small allowlist of app-state fields at
+`$CLAUDE_CONFIG_DIR/.claude.json` inside tmpfs, then applies the requested user
+settings. `auto` also records its startup opt-in in temporary settings;
+the initial model and effort use CLI arguments, so interactive changes remain
+possible. This also restores `max`, which normal `effortLevel` settings do not
+accept. `ultracode: true` is independent of effort. This does not enable
+`bypassPermissions`. Auto mode still depends on the provider's classifier
+support, and effort/workflows depend on the selected model. The CLI's live
+settings and permission mode are tested, not merely the generated JSON.
+
+Set `rememberModelEffort: true` to remember the current interactive model and
+effort at exit, including `/effort max`. A fixed managed status-line command reads
+the CLI's structured live values and writes only these two validated fields to a
+disposable preference volume. The host launcher merges only them into the host
+startup file with a private atomic write; concurrent sessions save in exit order.
+The next session restores them. No transcript, session ID, history, debug log,
+cache, or complete app-state file is copied back. The temporary volume is removed
+with that launch's containers. User/plugin hooks and user status-line commands
+remain disabled; only the fixed managed exporter is permitted. Other interactive
+settings remain temporary. Editing the host startup file changes future defaults;
+setting `rememberModelEffort: false` disables automatic preference writeback.
+
+The runtime defaults to `TZ=America/Los_Angeles`, using PST in winter and PDT in
+summer. Set an IANA zone with `TZ` in `.env` to override it.
 
 The `.env` parser accepts literal `KEY=VALUE`, optionally quoted. It does not
 evaluate shell expressions, expand `$VARIABLE`, or allow multiline values.
@@ -78,15 +114,18 @@ do not globally prune Docker resources.
 | `/workspace` | Only writable host business directory |
 | `/workspace/.claude` | tmpfs masks existing project Claude state/config |
 | `/config/settings.json` | Read-only persistent input copied into temporary HOME |
+| `/config/startup.json` | Read-only, derived approvals and startup preferences; no host paths or key hashes |
+| `/var/lib/claude-preferences` | Per-launch temporary volume containing only the validated model/effort snapshot |
 | `/etc/claude-code/managed-settings.json` | Read-only policy, generated with fixed model endpoint |
 | `/etc/claude-code/managed-mcp.json` | Empty managed MCP inventory; MCP disabled |
 | `/run/secrets/model_api_key` | Read-only credential; not in image or Docker environment |
 | `/home/node`, `/tmp`, `/run` | tmpfs, discarded with the container |
 | `/run/claude-ipc` | Socket, readiness marker and public ephemeral CA only |
 
-Edit `config/settings.json` on the host to persist preferences. In-session
-settings changes are intentionally discarded. Do not sync `.claude` or
-`.claude.json` back to the host. Project `CLAUDE.md` outside `.claude/` remains
+Edit `config/settings.json` on the host for ordinary preferences and
+`config/startup.json` for the startup policy above. When `rememberModelEffort` is
+enabled, only model/effort changes are saved; other in-session changes are
+discarded. Do not sync `.claude` or `.claude.json` back to the host. Project `CLAUDE.md` outside `.claude/` remains
 visible. Project `.claude/` content is masked, and the CLI loads only user
 settings. Move required preferences into the explicit settings input.
 Docker may create an empty `.claude` mountpoint in a workspace that lacks one.
@@ -153,8 +192,9 @@ unrelated websites. Keep the policy reviewed when updating the CLI.
 
 The managed policy disables known telemetry/error reporting/feedback,
 OpenTelemetry exporters, updates, official marketplace autoinstall, fast mode,
-artifacts, Remote Control, cloud connectors, IDE/browser integration, hooks,
-MCP, automatic memory and file checkpoints. The process starts with a clean
+artifacts, Remote Control, cloud connectors, IDE/browser integration, user/plugin
+hooks, MCP, automatic memory and file checkpoints. Only the fixed managed
+status-line preference exporter is allowed. The process starts with a clean
 environment and does not inherit host tracing exporters.
 
 `skipWebFetchPreflight` prevents the WebFetch domain check from contacting the

@@ -12,3 +12,8 @@ __pycache__/
 *.crt
 *.log
 .DS_Store
+
+# Host-only startup approvals and preferences; never publish local paths or key hashes.
+/config/startup.json
+/config/startup.json.lock
+/config/.startup-selection-*

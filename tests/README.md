@@ -83,11 +83,18 @@ not validate the user's real API credential, real model gateway, host proxy
 availability, or all internet software.
 
 The harness tests both non-interactive print mode and an actual interactive PTY.
-The interactive test confirms only the disposable fixture workspace and the fixed
-fake API key, receives a model response, and exits. Production sessions retain
-their trust and key prompts. The regression also verifies the effective global
-state path under `CLAUDE_CONFIG_DIR`; a print-mode success alone would miss a
-first-run onboarding failure. Arbitrary tools can deliberately write
+The default interactive test confirms only the disposable fixture workspace and
+the fixed fake API key. A second, pre-approved configuration must start without
+sending any confirmation keys, report auto/Max/ultracode through the live CLI,
+receive a model response, and exit. The live preference regression switches model,
+then effort from low to max, verifies the managed exporter captured Max despite
+the ordinary settings file retaining Low, and restores those values in a fresh
+container. User hooks/status lines must not execute. Fresh containers must reapply
+the preferences without retaining transcripts, history or cache. The runtime zone
+is checked against fixed winter and summer dates to verify PST/PDT transitions. Host-side tests bind approvals
+to the exact workspace and endpoint/auth/full-key digest, including two different
+keys with the same suffix. The effective global state path is also checked:
+a print-mode success alone would miss a first-run onboarding failure. Arbitrary tools can deliberately write
 conversation content into the writable workspace; no general-purpose writable
 workspace can prevent that. Docker tmpfs is not proof of forensic zero traces on
 the host. A domain/IP blacklist cannot enumerate future unknown telemetry or a
@@ -119,3 +126,26 @@ sockets and a request with all proxy variables removed must fail. Finally it
 checks normal-exit and SIGTERM cleanup using each launcher's reported random
 project label, including removal of staged configuration and credential files.
 It does not alter the host proxy or manage unrelated Docker resources.
+
+## Interactive preference smoke test
+
+Use already-pulled, matching release digests to test the production launcher's
+interactive preference save and restore path:
+
+```sh
+python3 tests/preferences_smoke.py \
+  --runtime-image ghcr.io/OWNER/claude-code-isolated@sha256:RUNTIME_DIGEST \
+  --gateway-image ghcr.io/OWNER/claude-code-isolated-gateway@sha256:GATEWAY_DIGEST \
+  --host-proxy-host host.docker.internal --host-proxy-port 6152 \
+  --output preferences-verification.json
+```
+
+The test uses two real host PTY launches with temporary configuration, an empty
+workspace, and a fake API key. It reads no deployment `.env` or real credential,
+never builds or pulls images, and sends only built-in slash commands, with no
+model prompt. It verifies that the native status line tracks model and effort
+changes, including session-only Max, and that the next launch restores them.
+Only model/effort may change in the host preferences, which must remain mode 0600;
+workspace session files, each test project's Docker resources, and staged
+configuration must be absent after exit. Existing containers and proxy settings
+are untouched.
