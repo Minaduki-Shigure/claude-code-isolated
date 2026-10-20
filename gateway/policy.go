@@ -209,12 +209,33 @@ func (p *policy) checkIP(a netip.Addr) error {
 }
 
 func (p *policy) checkURL(host string, u *url.URL) error {
+	host, err := canonicalHost(host)
+	if err != nil {
+		return errDenied
+	}
 	if err := p.checkHost(host); err != nil {
 		return err
 	}
 	requestPath := u.EscapedPath()
+	checkPath := func(candidate string) error {
+		raw := strings.ToLower("/" + strings.TrimLeft(candidate, "/"))
+		cleaned := path.Clean(raw)
+		// Check before and after normalization. Normalization must never
+		// unblock a forbidden prefix such as /anthropics/../another-org,
+		// since an origin may interpret escaped separators differently.
+		for _, rule := range p.DenyPaths {
+			if host == rule.Host &&
+				(strings.HasPrefix(raw, rule.Prefix) || strings.HasPrefix(cleaned, rule.Prefix)) {
+				return errDenied
+			}
+		}
+		return nil
+	}
 	// Recognize encoded scope/slash forms, reject excessive ambiguous escaping.
 	for i := 0; i < 4; i++ {
+		if checkPath(requestPath) != nil {
+			return errDenied
+		}
 		decoded, err := url.PathUnescape(requestPath)
 		if err != nil {
 			return errDenied
@@ -227,11 +248,5 @@ func (p *policy) checkURL(host string, u *url.URL) error {
 	if strings.Contains(requestPath, "%") || strings.ContainsAny(requestPath, "\\\x00\r\n") {
 		return errDenied
 	}
-	requestPath = strings.ToLower(path.Clean("/" + strings.TrimLeft(requestPath, "/")))
-	for _, rule := range p.DenyPaths {
-		if host == rule.Host && strings.HasPrefix(requestPath, rule.Prefix) {
-			return errDenied
-		}
-	}
-	return nil
+	return checkPath(requestPath)
 }

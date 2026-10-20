@@ -72,6 +72,16 @@ func TestOfficialSharedHostPaths(t *testing.T) {
 		"https://github.com/./anthropics/claude-code",
 		"https://github.com/foo/../anthropics/claude-code",
 		"https://github.com//anthropics/claude-code",
+		"https://github.com/x/%2e%2e/anthropics/claude-code",
+		"https://github.com/x/%252e%252e/anthropics/claude-code",
+		"https://github.com/%2f/x/%2e%2e/%61nthropics/claude-code",
+		"https://github.com/anthropics/../golang/go",
+		"https://github.com/%61nthropics/%252e%252e/golang/go",
+		"https://github.com/x/%2e%2e%2fanthropics/claude-code",
+		"https://GITHUB.COM./x/../anthropics/claude-code",
+		"https://raw.githubusercontent.com/x/%2E%2E/anthropics/claude-code/main/README.md",
+		"https://registry.npmjs.org/x/%2e%2e/%40anthropic-ai%2fclaude-code",
+		"https://github.com/x%5c..%5canthropics/claude-code",
 		"https://storage.googleapis.com/claude-code-dist-build/latest",
 	} {
 		u, err := url.Parse(raw)
