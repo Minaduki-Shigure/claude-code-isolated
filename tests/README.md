@@ -29,8 +29,8 @@ The harness uses the production `compose.yaml` and a temporary override:
   fixture. No production domain/IP rule is weakened for tests.
 - The model key is a fixed fake string. The fixture records request type,
   hostname, path, and stream/tool flags, but never credentials or prompt bodies.
-- The resource profile is explicitly fixed to 8 GiB RAM, no container swap,
-  1024 processes/threads, 1 GiB shared memory, and 2 GiB each for HOME and `/tmp`.
+- The resource profile is explicitly fixed to 10 GiB RAM, no container swap,
+  1024 processes/threads, 2 GiB shared memory, and 2 GiB each for HOME and `/tmp`.
   Host environment overrides cannot change these regression values.
 - Cleanup removes only resources created under this test's unique project and
   container names. No existing proxy configuration or container is touched.
@@ -74,7 +74,7 @@ The harness uses the production `compose.yaml` and a temporary override:
     A probe writes and reads 96 MiB of shared memory, crossing the previous
     64 MiB limit, then removes its file. It starts 300 concurrent threads,
     crossing the previous 256-task limit, then releases and joins every thread.
-    No OOM events may occur. This bounded check does not fill the 8 GiB budget
+    No OOM events may occur. This bounded check does not fill the 10 GiB budget
     or deliberately trigger OOM.
 
 Go's `net/http` parser canonicalizes a plain HTTP absolute-form request's Host

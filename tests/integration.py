@@ -26,7 +26,7 @@ checks = []
 cgroup = pathlib.Path("/sys/fs/cgroup")
 assert (cgroup / "cgroup.controllers").is_file(), "cgroup v2 is required"
 for filename, expected, label in (
-    ("memory.max", 8 * 1024 ** 3, "memory-limit-8g"),
+    ("memory.max", 10 * 1024 ** 3, "memory-limit-10g"),
     ("memory.swap.max", 0, "container-swap-disabled"),
     ("pids.max", 1024, "process-thread-limit-1024"),
 ):
@@ -40,7 +40,7 @@ def memory_events():
 
 before_events = memory_events()
 for directory, expected, label in (
-    ("/dev/shm", 1024 ** 3, "shared-memory-capacity-1g"),
+    ("/dev/shm", 2 * 1024 ** 3, "shared-memory-capacity-2g"),
     ("/home/node", 2 * 1024 ** 3, "home-tmpfs-capacity-2g"),
     ("/tmp", 2 * 1024 ** 3, "temporary-files-capacity-2g"),
 ):
@@ -589,8 +589,8 @@ def main():
             "COMPOSE_DISABLE_ENV_FILE": "1",
             "TZ": "America/Los_Angeles",
             # Pin the regression profile rather than inheriting host overrides.
-            "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
-            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
+            "CLAUDE_MEMORY_LIMIT": "10g", "CLAUDE_PIDS_LIMIT": "1024",
+            "CLAUDE_SHM_SIZE": "2g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
             "CLAUDE_TMP_TMPFS_SIZE": "2g",
             "CLAUDE_IMAGE": args.runtime_image, "GATEWAY_IMAGE": args.gateway_image,
             "WORKSPACE": str(workspace), "SETTINGS_FILE": str(settings),
@@ -680,10 +680,10 @@ else:
             assert "ALL" in host["CapDrop"]
             assert any("no-new-privileges" in value for value in host["SecurityOpt"])
             assert host["LogConfig"]["Type"] == "none"
-            assert host["Memory"] == 8 * 1024 ** 3
+            assert host["Memory"] == 10 * 1024 ** 3
             assert host["MemorySwap"] == host["Memory"]
             assert host["PidsLimit"] == 1024
-            assert host["ShmSize"] == 1024 ** 3
+            assert host["ShmSize"] == 2 * 1024 ** 3
             assert info["Config"]["User"] in ("1000:1000", "1000", "node")
             mounts = {item["Destination"]: item for item in info["Mounts"]}
             assert mounts["/workspace"]["RW"]

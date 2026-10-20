@@ -31,8 +31,8 @@ ALLOWED = {
 DEFAULTS = {
     "HOST_PROXY_HOST": "host.docker.internal", "HOST_PROXY_PORT": "6152",
     "TZ": "America/Los_Angeles",
-    "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
-    "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
+    "CLAUDE_MEMORY_LIMIT": "10g", "CLAUDE_PIDS_LIMIT": "1024",
+    "CLAUDE_SHM_SIZE": "2g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
     "CLAUDE_TMP_TMPFS_SIZE": "2g",
     "MODEL_AUTH_MODE": "bearer", "ANTHROPIC_MODEL": "",
     "CLAUDE_IMAGE": "ghcr.io/minaduki-shigure/claude-code-isolated:latest",

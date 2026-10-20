@@ -53,10 +53,10 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: ${CLAUDE_PIDS_LIMIT:-1024}
-    mem_limit: ${CLAUDE_MEMORY_LIMIT:-8g}
+    mem_limit: ${CLAUDE_MEMORY_LIMIT:-10g}
     # Equal RAM+swap and RAM limits leave no container swap allowance.
-    memswap_limit: ${CLAUDE_MEMORY_LIMIT:-8g}
-    shm_size: ${CLAUDE_SHM_SIZE:-1g}
+    memswap_limit: ${CLAUDE_MEMORY_LIMIT:-10g}
+    shm_size: ${CLAUDE_SHM_SIZE:-2g}
     ulimits:
       core: {soft: 0, hard: 0}
     working_dir: /workspace

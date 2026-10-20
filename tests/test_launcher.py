@@ -104,8 +104,8 @@ class LauncherBoundaryTests(unittest.TestCase):
 
     def test_resource_defaults_and_literal_overrides(self):
         expected = {
-            "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
-            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
+            "CLAUDE_MEMORY_LIMIT": "10g", "CLAUDE_PIDS_LIMIT": "1024",
+            "CLAUDE_SHM_SIZE": "2g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
             "CLAUDE_TMP_TMPFS_SIZE": "2g",
         }
         env_file = self.root / ".env"
@@ -138,9 +138,9 @@ class LauncherBoundaryTests(unittest.TestCase):
         for key in ("CLAUDE_SHM_SIZE", "CLAUDE_HOME_TMPFS_SIZE", "CLAUDE_TMP_TMPFS_SIZE"):
             with self.subTest(key=key):
                 with self.assertRaisesRegex(ValueError, "must not exceed"):
-                    launcher.validate(dict(self.config, **{key: "9g"}))
+                    launcher.validate(dict(self.config, **{key: "11g"}))
         # Independent upper bounds are not preallocated or added to the cgroup cap.
-        self.assertEqual(launcher.validate(dict(self.config))["CLAUDE_MEMORY_LIMIT"], "8g")
+        self.assertEqual(launcher.validate(dict(self.config))["CLAUDE_MEMORY_LIMIT"], "10g")
 
     def test_sensitive_paths_inside_workspace_are_rejected_including_symlinks(self):
         inside = self.workspace / "private.json"
