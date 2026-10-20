@@ -226,6 +226,9 @@ import json, os, pathlib
 home = pathlib.Path.home()
 for name in ("session-probe", ".claude/cache-probe", ".claude/projects/session-probe"):
     assert not (home / name).exists(), name
+state = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"])
+assert not (state / "interactive-session-probe").exists()
+assert not list(state.rglob("*.jsonl"))
 assert not pathlib.Path("/tmp/session-probe").exists()
 assert not pathlib.Path("/workspace/.claude/session-probe").exists()
 assert pathlib.Path("/workspace/persist-probe").read_text() == "must-remain"
@@ -233,7 +236,8 @@ settings = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
 assert json.loads(settings.read_text())["env"]["ISOLATION_SETTINGS_SENTINEL"] == "persistent-config"
 print(json.dumps({"checks": ["home-state-not-persistent", "tmp-not-persistent",
                             "project-claude-state-not-persistent",
-                            "workspace-persists", "configuration-persists"]}))
+                            "workspace-persists", "configuration-persists",
+                            "interactive-state-not-persistent", "no-jsonl-after-recreate"]}))
 '''
 
 
@@ -467,6 +471,7 @@ else:
                            "only-workspace-writable-host-bind", "all-state-on-tmpfs"])
             _, result = probe(MODEL_PROBE, "model")
             summary["mock_session_id"] = result.get("session_id")
+            probe((ROOT / "tests/interactive_probe.py").read_text(), "interactive")
             probe(RECREATE_PROBE, "recreate")
             assert hashlib.sha256(settings.read_bytes()).hexdigest() == settings_hash
             checks.append("persistent-settings-not-modified")

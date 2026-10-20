@@ -106,8 +106,9 @@ def main():
         if name.upper() in RESERVED_ENV or name.upper().startswith(("ANTHROPIC_", "OTEL_", "CLAUDE_CODE_", "DISABLE_", "ENABLE_")):
             raise RuntimeError(f"User settings cannot override isolation environment variable {name}")
     (state / "settings.json").write_text(json.dumps(settings))
-    # App state is intentionally ephemeral, including the onboarding marker.
-    (HOME_DIR / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
+    # CLAUDE_CONFIG_DIR also relocates the global .claude.json app-state file.
+    # Seed onboarding in that effective directory; it remains on HOME tmpfs.
+    (state / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
     policy = json.loads(POLICY.read_text())
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",

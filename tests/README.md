@@ -82,9 +82,12 @@ native amd64 and arm64 runners before updating release tags. A fixture test does
 not validate the user's real API credential, real model gateway, host proxy
 availability, or all internet software.
 
-The real Claude test is non-interactive print mode. The same disposable mounts
-protect interactive sessions, but a successful print-mode result does not claim
-to have exercised the interactive UI. Arbitrary tools can deliberately write
+The harness tests both non-interactive print mode and an actual interactive PTY.
+The interactive test confirms only the disposable fixture workspace and the fixed
+fake API key, receives a model response, and exits. Production sessions retain
+their trust and key prompts. The regression also verifies the effective global
+state path under `CLAUDE_CONFIG_DIR`; a print-mode success alone would miss a
+first-run onboarding failure. Arbitrary tools can deliberately write
 conversation content into the writable workspace; no general-purpose writable
 workspace can prevent that. Docker tmpfs is not proof of forensic zero traces on
 the host. A domain/IP blacklist cannot enumerate future unknown telemetry or a

@@ -41,6 +41,10 @@ cp .env.example .env
 ./scripts/claude-docker.sh --pull never
 ```
 
+每个新的交互会话仍会询问是否信任 workspace；使用 API key 时也会询问是否采用该密钥。
+请根据实际项目来源确认。确认状态随临时容器丢弃；首次启动标记则在 tmpfs 内的
+`$CLAUDE_CONFIG_DIR/.claude.json` 中初始化。
+
 每次启动默认拉取经过 CI 验证的 `latest`，检查 Claude 与网关镜像属于同一次发布，
 并固定本次运行使用的镜像内容。需要固定版本时，将两个镜像配置为相同的
 `VERSION-build-RUN-ATTEMPT` 标签或对应摘要。

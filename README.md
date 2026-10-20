@@ -37,6 +37,11 @@ IPv4/IPv6 targets on ports 80 and 443. Nothing here changes the host proxy.
 ./scripts/claude-docker.sh
 ```
 
+Each fresh interactive session still asks you to trust the workspace and, for
+API-key authentication, confirm the configured key. These confirmations remain
+interactive; their state is not persisted. The initial onboarding marker is
+seeded at `$CLAUDE_CONFIG_DIR/.claude.json` inside tmpfs.
+
 The `.env` parser accepts literal `KEY=VALUE`, optionally quoted. It does not
 evaluate shell expressions, expand `$VARIABLE`, or allow multiline values.
 Configuration, credentials and this deployment directory must remain outside
