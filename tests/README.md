@@ -143,7 +143,7 @@ python3 tests/preferences_smoke.py \
 The test uses two real host PTY launches with temporary configuration, an empty
 workspace, and a fake API key. It reads no deployment `.env` or real credential,
 never builds or pulls images, and sends only built-in slash commands, with no
-model prompt. It verifies that the native status line tracks model and effort
+user task prompt. Claude Code may perform its own provider/model checks. It verifies that the native status line tracks model and effort
 changes, including session-only Max, and that the next launch restores them.
 Only model/effort may change in the host preferences, which must remain mode 0600;
 workspace session files, each test project's Docker resources, and staged

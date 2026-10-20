@@ -3,7 +3,7 @@
 
 Uses disposable configuration, an empty workspace, and a fake credential only.
 Both images must already exist locally at registry digests. No build, pull, or
-model prompt is issued; the only interactive input is built-in slash commands.
+user task prompt is issued; the only interactive input is built-in slash commands.
 """
 
 import argparse
@@ -35,7 +35,7 @@ PROJECT = re.compile(r"Starting isolated project (cc-isolated-[0-9a-f]{12})")
 ANSI = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
 FAKE_KEY = "preference-smoke-fake-key-no-account-no-billing"
 INITIAL = {"model": "claude-opus-5-5", "effort": "high"}
-FINAL = {"model": "claude-opus-4-8", "effort": "max"}
+FINAL = {"model": "claude-sonnet-5-5", "effort": "max"}
 CONFIRMATIONS = ("Yes,Itrustthisfolder", "DoyouwanttousethisAPIkey?")
 READ_SELECTION = r"""
 import json, os, stat, sys
@@ -225,7 +225,7 @@ class InteractiveLauncher:
                              + self.text()[-1500:])
 
     def command(self, value):
-        if value not in ("/model claude-opus-4-8", "/effort low", "/effort max", "/exit"):
+        if value not in ("/model sonnet", "/effort low", "/effort max", "/exit"):
             raise AssertionError("test input must be an approved built-in slash command")
         self.check_ui()
         os.write(self.master, value.encode())
@@ -291,7 +291,7 @@ def main():
     summary = {
         "runtime_image": args.runtime_image, "gateway_image": args.gateway_image,
         "host_proxy": f"{args.host_proxy_host}:{args.host_proxy_port}",
-        "model_prompts_sent": 0, "projects": [], "checks": [], "passed": False,
+        "user_task_prompts_sent": 0, "projects": [], "checks": [], "passed": False,
     }
     try:
         run(["docker", "info", "--format", "{{.ServerVersion}}"])
@@ -354,7 +354,7 @@ def main():
                     if iteration == 1:
                         check_host_config(startup, original, workspace)
                         for command, selection in (
-                            ("/model claude-opus-4-8", {"model": FINAL["model"], "effort": "high"}),
+                            ("/model sonnet", {"model": FINAL["model"], "effort": "high"}),
                             ("/effort low", {"model": FINAL["model"], "effort": "low"}),
                             ("/effort max", FINAL),
                         ):
