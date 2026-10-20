@@ -41,8 +41,8 @@ def memory_events():
 before_events = memory_events()
 for directory, expected, label in (
     ("/dev/shm", 1024 ** 3, "shared-memory-capacity-1g"),
-    ("/home/node", 4 * 1024 ** 3, "home-tmpfs-capacity-4g"),
-    ("/tmp", 4 * 1024 ** 3, "temporary-files-capacity-4g"),
+    ("/home/node", 2 * 1024 ** 3, "home-tmpfs-capacity-2g"),
+    ("/tmp", 2 * 1024 ** 3, "temporary-files-capacity-2g"),
 ):
     stats = os.statvfs(directory)
     actual = stats.f_blocks * stats.f_frsize
@@ -590,8 +590,8 @@ def main():
             "TZ": "America/Los_Angeles",
             # Pin the regression profile rather than inheriting host overrides.
             "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
-            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "4g",
-            "CLAUDE_TMP_TMPFS_SIZE": "4g",
+            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
+            "CLAUDE_TMP_TMPFS_SIZE": "2g",
             "CLAUDE_IMAGE": args.runtime_image, "GATEWAY_IMAGE": args.gateway_image,
             "WORKSPACE": str(workspace), "SETTINGS_FILE": str(settings),
             "STARTUP_STATE_FILE": str(startup_default),

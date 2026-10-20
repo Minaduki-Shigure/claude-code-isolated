@@ -30,7 +30,7 @@ The harness uses the production `compose.yaml` and a temporary override:
 - The model key is a fixed fake string. The fixture records request type,
   hostname, path, and stream/tool flags, but never credentials or prompt bodies.
 - The resource profile is explicitly fixed to 8 GiB RAM, no container swap,
-  1024 processes/threads, 1 GiB shared memory, and 4 GiB each for HOME and `/tmp`.
+  1024 processes/threads, 1 GiB shared memory, and 2 GiB each for HOME and `/tmp`.
   Host environment overrides cannot change these regression values.
 - Cleanup removes only resources created under this test's unique project and
   container names. No existing proxy configuration or container is touched.

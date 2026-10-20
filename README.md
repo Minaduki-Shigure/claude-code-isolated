@@ -133,8 +133,8 @@ Set these literal values in `.env`; changes apply to the next launch:
 | `CLAUDE_MEMORY_LIMIT` | `8g` | Total cgroup memory, including processes, charged page cache, tmpfs and shared memory |
 | `CLAUDE_PIDS_LIMIT` | `1024` | Processes and threads combined |
 | `CLAUDE_SHM_SIZE` | `1g` | `/dev/shm` capacity |
-| `CLAUDE_HOME_TMPFS_SIZE` | `4g` | Ephemeral `/home/node` capacity |
-| `CLAUDE_TMP_TMPFS_SIZE` | `4g` | Ephemeral `/tmp` capacity |
+| `CLAUDE_HOME_TMPFS_SIZE` | `2g` | Ephemeral `/home/node` capacity |
+| `CLAUDE_TMP_TMPFS_SIZE` | `2g` | Ephemeral `/tmp` capacity |
 
 Sizes accept positive whole numbers followed by `m` or `g` (MiB/GiB),
 case-insensitively. Each filesystem cap must fit within the memory limit;

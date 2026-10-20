@@ -31,8 +31,8 @@ cp .env.example .env
 | `CLAUDE_MEMORY_LIMIT` | `8g` | 容器总内存硬上限，包含进程、计费页缓存、tmpfs 和共享内存 |
 | `CLAUDE_PIDS_LIMIT` | `1024` | 进程与线程的合计上限 |
 | `CLAUDE_SHM_SIZE` | `1g` | `/dev/shm` 容量上限 |
-| `CLAUDE_HOME_TMPFS_SIZE` | `4g` | `/home/node` 临时用户目录容量上限 |
-| `CLAUDE_TMP_TMPFS_SIZE` | `4g` | `/tmp` 临时目录容量上限 |
+| `CLAUDE_HOME_TMPFS_SIZE` | `2g` | `/home/node` 临时用户目录容量上限 |
+| `CLAUDE_TMP_TMPFS_SIZE` | `2g` | `/tmp` 临时目录容量上限 |
 
 容量只接受正整数加 `m` 或 `g`，对应 MiB/GiB，大小写均可。
 每个临时文件系统上限不能超过总内存上限；PIDs 接受 1–65536。

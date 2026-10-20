@@ -105,8 +105,8 @@ class LauncherBoundaryTests(unittest.TestCase):
     def test_resource_defaults_and_literal_overrides(self):
         expected = {
             "CLAUDE_MEMORY_LIMIT": "8g", "CLAUDE_PIDS_LIMIT": "1024",
-            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "4g",
-            "CLAUDE_TMP_TMPFS_SIZE": "4g",
+            "CLAUDE_SHM_SIZE": "1g", "CLAUDE_HOME_TMPFS_SIZE": "2g",
+            "CLAUDE_TMP_TMPFS_SIZE": "2g",
         }
         env_file = self.root / ".env"
         env_file.write_text("")

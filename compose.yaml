@@ -101,8 +101,8 @@ services:
       - ipc:/run/claude-ipc:ro
       - preferences:/var/lib/claude-preferences
     tmpfs:
-      - /home/node:rw,nosuid,nodev,size=${CLAUDE_HOME_TMPFS_SIZE:-4g},uid=1000,gid=1000,mode=0700
-      - /tmp:rw,nosuid,nodev,size=${CLAUDE_TMP_TMPFS_SIZE:-4g},mode=1777
+      - /home/node:rw,nosuid,nodev,size=${CLAUDE_HOME_TMPFS_SIZE:-2g},uid=1000,gid=1000,mode=0700
+      - /tmp:rw,nosuid,nodev,size=${CLAUDE_TMP_TMPFS_SIZE:-2g},mode=1777
       - /run:rw,nosuid,nodev,noexec,size=32m,uid=1000,gid=1000,mode=0755
       - /workspace/.claude:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700
     logging: {driver: none}
