@@ -101,7 +101,7 @@ class NpmSecurityPatchTests(unittest.TestCase):
             current, patch = npm / "node_modules" / name, patches / name
             current.mkdir(parents=True)
             patch.mkdir(parents=True)
-            version = asset["version"] if newer else {"brace-expansion": "5.0.9", "undici": "6.28.0"}[name]
+            version = asset["version"] if newer else {"brace-expansion": "5.0.9", "undici": "6.28.1"}[name]
             if newer:
                 version = ".".join(version.split(".")[:2] + ["999"])
             metadata = {"name": name, "version": version}
@@ -117,7 +117,7 @@ class NpmSecurityPatchTests(unittest.TestCase):
             npm, patches = self.tree(Path(temp))
             lock = {"lockfileVersion": 3, "packages": {
                 "node_modules/brace-expansion": {"version": "5.0.9"},
-                "node_modules/undici": {"version": "6.28.0"},
+                "node_modules/undici": {"version": "6.28.1"},
             }}
             path = npm / "package-lock.json"
             path.write_text(json.dumps(lock))

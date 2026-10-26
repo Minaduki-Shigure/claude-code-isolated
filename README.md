@@ -287,12 +287,15 @@ proxy and the small firewall/init dependencies. Model credentials and project
 files are never in the build context.
 
 The Node base's npm bundle currently needs two security repairs:
-`brace-expansion` 5.0.12 and `undici` 6.28.1. CI downloads their official npm
+`brace-expansion` 5.0.12 and `undici` 6.29.1. CI downloads their official npm
 tarballs with fixed SHA-512 integrity values and replaces only older versions
 within the same major. Changed dependency requirements or unexpected layouts
 stop the build; newer fixed versions are preserved. Any existing lock metadata
 is updated, and npm/module smoke tests run without network access. The exact
 repair record is saved at `/usr/local/share/claude-isolation/npm-security-repairs.json`.
+Candidate integration tests also exercise the excessive-content-encoding and
+early-close response from CVE-2026-109869 against npm's actual undici copy;
+rejecting the response must not crash the process or break a later normal fetch.
 
 A blocked update leaves the previous tested `latest` usable. Review Actions
 failures; do not weaken the security gate just to obtain a new version.

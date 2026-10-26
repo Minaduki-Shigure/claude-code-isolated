@@ -76,6 +76,12 @@ The harness uses the production `compose.yaml` and a temporary override:
     crossing the previous 256-task limit, then releases and joins every thread.
     No OOM events may occur. This bounded check does not fill the 10 GiB budget
     or deliberately trigger OOM.
+12. npm's bundled undici handles the CVE-2026-109869 response without crashing:
+    an ephemeral loopback server sends six content encodings and closes before
+    the promised body byte. The fetch rejects, no unhandled stream error kills
+    the process, and a following normal fetch succeeds. The probe has bounded
+    timeouts, cleans up its listener/connections, and records the installed
+    dependency version. It does not contact an external server.
 
 Go's `net/http` parser canonicalizes a plain HTTP absolute-form request's Host
 from its request-target before handing it to the gateway. For a conflicting raw

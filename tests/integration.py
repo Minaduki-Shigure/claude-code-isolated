@@ -699,6 +699,13 @@ else:
                            "no-new-privileges", "docker-logging-disabled",
                            "only-workspace-writable-host-bind", "session-state-on-tmpfs"])
             probe(RESOURCE_PROBE, "resources")
+            # Exercise npm's actual bundled dependency, not Node's built-in fetch.
+            # The regression's server is loopback-only inside network_mode=none.
+            _, npm_security = probe(
+                "import subprocess\nsubprocess.run(" + repr([
+                    "node", "-e", (ROOT / "tests/undici_security_probe.cjs").read_text()
+                ]) + ", check=True, timeout=12)\n", "npm-security")
+            summary["npm_undici_version"] = npm_security["undici_version"]
             probe(MEMORY_POLICY_PROBE, "memory-policy")
             _, result = probe(MODEL_PROBE, "model")
             summary["mock_session_id"] = result.get("session_id")

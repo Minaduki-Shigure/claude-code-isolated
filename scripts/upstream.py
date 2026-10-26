@@ -28,7 +28,8 @@ CHECKSUM = re.compile(r"[0-9a-f]{64}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Node 24's bundled npm (including npm 12.2.0) still ships these vulnerable
 # transitive dependencies. Same-major official patch releases, pinned by npm SRI:
-# CVE-2026-102276/102278 and CVE-2026-19534. Remove after upstream npm catches up.
+# CVE-2026-102276/102278, CVE-2026-19534 and CVE-2026-109869.
+# Remove after upstream npm catches up.
 NPM_SECURITY_PATCHES = {
     "brace-expansion": {
         "version": "5.0.12",
@@ -36,9 +37,9 @@ NPM_SECURITY_PATCHES = {
         "integrity": "sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==",
     },
     "undici": {
-        "version": "6.28.1",
-        "url": "https://registry.npmjs.org/undici/-/undici-6.28.1.tgz",
-        "integrity": "sha512-zWpdTVD54H48CIybL0rWQ3ukpb9d23wM7eH5RtfdmeP70cWHNjtfo7P4vZX+5CoDcO53J4Pu5uXp7lNfjc6DRA==",
+        "version": "6.29.1",
+        "url": "https://registry.npmjs.org/undici/-/undici-6.29.1.tgz",
+        "integrity": "sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==",
     },
 }
 
