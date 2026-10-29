@@ -37,7 +37,9 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -v
           python3 -m py_compile scripts/*.py tests/integration.py
-          bash -n scripts/*.sh
+          for script in scripts/*.sh; do
+            bash -n "$script" || exit 1
+          done
           cd gateway
           go test -race ./...
           go vet ./...
