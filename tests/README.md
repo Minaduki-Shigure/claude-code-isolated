@@ -1,5 +1,12 @@
 # Isolation verification
 
+The source tests also exercise `scripts/scan.sh` with a fake Docker CLI. They
+verify recovery from a transient scanner-image download failure, a three-attempt
+limit with 5/10-second backoff, reuse of the pinned scanner already on the runner,
+and rejection of scanner errors or fixable HIGH/CRITICAL findings. Only image
+acquisition is retried; scans and the vulnerability gate are not retried. These
+tests do not start containers or access a registry.
+
 Run the integration test against the exact candidate digests published by
 GitHub Actions:
 
